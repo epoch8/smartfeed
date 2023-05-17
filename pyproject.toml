@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "smartfeed"
+version = "0.1.0"
+description = ""
+authors = ["Sultan Zakariya <sultik10@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pydantic = "^1.10.7"
+isort = "^5.12.0"
+black = "^23.3.0"
+pylint = "^2.17.4"
+mypy = "^1.3.0"
+pytest = "^7.3.1"
+pylint-pydantic = "^0.1.8"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
