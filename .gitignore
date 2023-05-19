@@ -208,3 +208,6 @@ ENV/
 
 # mkdocs documentation
 /site
+
+# Poetry Lock
+*.lock

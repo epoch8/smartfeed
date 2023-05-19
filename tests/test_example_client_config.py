@@ -1,4 +1,3 @@
-import json
 from typing import Callable, Dict
 
 from smartfeed.examples.example_client import LookyMixer, LookyMixerRequest
@@ -6,16 +5,14 @@ from smartfeed.manager import FeedManager
 from smartfeed.schemas import (
     FeedConfig,
     MergerPercentage,
+    MergerPercentageItem,
     MergerPositional,
     SmartFeedResult,
     SmartFeedResultNextPage,
     SmartFeedResultNextPageInside,
     SubFeed,
 )
-
-CONFIG_PATH: str = "tests/fixtures/example_client_config.json"
-with open(CONFIG_PATH, encoding="utf-8") as config_file:
-    CONFIG = json.load(config_file)
+from tests.fixtures.configs import EXAMPLE_CLIENT_FEED
 
 
 class TestExampleClientConfig:
@@ -24,26 +21,13 @@ class TestExampleClientConfig:
     """
 
     def setup_method(self):
-        self.feed_limit: int = 50
+        self.sub_feed = SubFeed(subfeed_id="ec_sub_feed", type="subfeed", method_name="ads")
+        self.sub_feed_2 = SubFeed(subfeed_id="ec_sub_feed_2", type="subfeed", method_name="ads")
+        self.query_params = LookyMixerRequest(profile_id="x", limit=10)
         self.methods_dict: Dict[str, Callable] = {
             "ads": LookyMixer().looky_method,
             "followings": LookyMixer().looky_method,
-            "followings_2": LookyMixer().looky_method,
         }
-        self.feed_manager = FeedManager(config=CONFIG, methods_dict=self.methods_dict)
-        self.feed = self.feed_manager.feed_config.feed
-        self.query_params = LookyMixerRequest(
-            profile_id="x",
-            limit=self.feed_limit,
-            next_page={
-                "data": {
-                    "merger_pos": {"page": 2},
-                    "sf_positional": {},
-                    "sf_1_default_merger_of_main": {"page": 2, "after": []},
-                    "sf_2_default_merger_of_main": {"page": 3, "after": []},
-                }
-            },
-        )
 
     @staticmethod
     def get_next_page(subfeed_data: Dict[str, SmartFeedResultNextPage]) -> SmartFeedResultNextPage:
@@ -94,12 +78,14 @@ class TestExampleClientConfig:
         Тест для проверки парсинга JSON-файла конфигурации.
         """
 
-        assert isinstance(self.feed_manager.feed_config, FeedConfig)
-        assert isinstance(self.feed_manager.feed_config.feed, MergerPositional)
-        assert isinstance(self.feed_manager.feed_config.feed.positional, SubFeed)
-        assert isinstance(self.feed_manager.feed_config.feed.default, MergerPercentage)
-        assert isinstance(self.feed_manager.feed_config.feed.default.items[0].data, SubFeed)
-        assert self.feed_manager.feed_config.feed.default.items[0].percentage == 40
+        feed_manager = FeedManager(config=EXAMPLE_CLIENT_FEED, methods_dict=self.methods_dict)
+
+        assert isinstance(feed_manager.feed_config, FeedConfig)
+        assert isinstance(feed_manager.feed_config.feed, MergerPositional)
+        assert isinstance(feed_manager.feed_config.feed.positional, SubFeed)
+        assert isinstance(feed_manager.feed_config.feed.default, MergerPercentage)
+        assert isinstance(feed_manager.feed_config.feed.default.items[0].data, SubFeed)
+        assert feed_manager.feed_config.feed.default.items[0].percentage == 40
 
     def test_sub_feed_get_data(self) -> None:
         """
@@ -107,324 +93,253 @@ class TestExampleClientConfig:
         """
 
         # Формируем "правильные ответы".
-        positional_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.positional.subfeed_id,
-            query_params=self.query_params,
-        )
-        default_subfeed_1_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[0].data.subfeed_id,
+        sub_feed_ans = self.get_example_client_method_result(
+            subfeed_id=self.sub_feed.subfeed_id,
             query_params=self.query_params,
         )
 
         # Получаем данные из субфидов.
-        positional_data = self.feed.positional.get_data(
-            methods_dict=self.methods_dict,
-            limit=self.query_params.limit,
-            next_page=self.query_params.next_page,
-            profile_id=self.query_params.profile_id,
-        )
-        default_subfeed_1_data = self.feed.default.items[0].data.get_data(
+        sub_feed_data = self.sub_feed.get_data(
             methods_dict=self.methods_dict,
             limit=self.query_params.limit,
             next_page=self.query_params.next_page,
             profile_id=self.query_params.profile_id,
         )
 
-        print(f"\n\nPositional SubFeed Data: {positional_data}")
-        assert positional_data.json() == positional_ans.json()
-        print(f"\nDefault 1st SubFeed Data: {default_subfeed_1_data}")
-        assert default_subfeed_1_data.json() == default_subfeed_1_ans.json()
+        print(f"\n\nSubFeed Data: {sub_feed_data}")
+        assert sub_feed_data.json() == sub_feed_ans.json()
 
     def test_merger_percentage_get_data(self) -> None:
         """
         Тест для проверки получения данных процентного мерджера.
         """
 
+        item_1 = MergerPercentageItem(percentage=70, data=self.sub_feed)
+        item_2 = MergerPercentageItem(percentage=30, data=self.sub_feed_2)
+        merger_percentage = MergerPercentage(
+            merger_id="ec_merger_percentage",
+            type="merger_percentage",
+            shuffle=False,
+            items=[item_1, item_2],
+        )
+        merger_percentage_shuffled = MergerPercentage(
+            merger_id="ec_merger_percentage",
+            type="merger_percentage",
+            shuffle=True,
+            items=[item_1, item_2],
+        )
+
         # Формируем "правильные ответы".
-        default_1_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[0].data.subfeed_id,
+        item_1_ans = self.get_example_client_method_result(
+            subfeed_id=item_1.data.subfeed_id,
             query_params=self.query_params,
-            percentage=self.feed.default.items[0].percentage,
+            percentage=item_1.percentage,
         )
-        default_2_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[1].data.subfeed_id,
+        item_2_ans = self.get_example_client_method_result(
+            subfeed_id=item_2.data.subfeed_id,
             query_params=self.query_params,
-            percentage=self.feed.default.items[1].percentage,
+            percentage=item_2.percentage,
         )
-        default_merger_ans = SmartFeedResult(
-            data=(default_1_ans.data + default_2_ans.data),
+        merger_percentage_ans = SmartFeedResult(
+            data=(item_1_ans.data + item_2_ans.data),
             next_page=self.get_next_page(
                 subfeed_data={
-                    self.feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
-                    self.feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
+                    item_1.data.subfeed_id: item_1_ans.next_page,
+                    item_2.data.subfeed_id: item_2_ans.next_page,
                 }
             ),
-            has_next_page=True if any([default_1_ans.has_next_page, default_2_ans.has_next_page]) else False,
+            has_next_page=True if any([item_1_ans.has_next_page, item_2_ans.has_next_page]) else False,
         )
 
         # Получаем данные из мерджера.
-        default_merger_data = self.feed.default.get_data(
+        merger_percentage_data = merger_percentage.get_data(
+            methods_dict=self.methods_dict,
+            limit=self.query_params.limit,
+            next_page=self.query_params.next_page,
+            profile_id=self.query_params.profile_id,
+        )
+        merger_percentage_shuffled_data = merger_percentage_shuffled.get_data(
             methods_dict=self.methods_dict,
             limit=self.query_params.limit,
             next_page=self.query_params.next_page,
             profile_id=self.query_params.profile_id,
         )
 
-        print(f"\n\nPercentage for 1st': {self.feed.default.items[0].percentage}%")
-        print(f"\nPercentage for 2nd: {self.feed.default.items[1].percentage}%")
-        print(f"\nPercentage Merger Data: {default_merger_data}")
+        print(f"\n\nPercentage for 1st': {item_1.percentage}%")
+        print(f"\nPercentage for 2nd: {item_2.percentage}%")
+        print(f"\nMerger Percentage Data: {merger_percentage_data}")
+        print(f"\nMerger Percentage + Shuffle Data: {merger_percentage_shuffled_data}")
 
-        if self.feed.default.shuffle:
-            assert set(default_merger_data.data) == set(default_merger_ans.data)
-        else:
-            assert default_merger_data == default_merger_ans
+        assert merger_percentage_data == merger_percentage_ans
+        assert set(merger_percentage_shuffled_data.data) == set(merger_percentage_ans.data)
 
     def test_merger_positional_get_data(self) -> None:
         """
         Тест для проверки получения данных позиционного мерджера.
         """
 
+        self.query_params.next_page = SmartFeedResultNextPage(
+            data={"ec_sub_feed_2": SmartFeedResultNextPageInside(page=2, after=None)}
+        )
+
+        mp_with_positions = MergerPositional(
+            merger_id="ec_merger_positional_with_positions",
+            type="merger_positional",
+            positions=[1, 3, 12],
+            positional=self.sub_feed,
+            default=self.sub_feed_2,
+        )
+        mp_with_step = MergerPositional(
+            merger_id="ec_merger_positional_with_step",
+            type="merger_positional",
+            start=2,
+            end=25,
+            step=4,
+            positional=self.sub_feed,
+            default=self.sub_feed_2,
+        )
+        mp_both = MergerPositional(
+            merger_id="ec_merger_positional",
+            type="merger_positional",
+            positions=[1, 3],
+            start=4,
+            end=9,
+            step=2,
+            positional=self.sub_feed,
+            default=self.sub_feed_2,
+        )
+
         # Формируем "правильные ответы".
-        default_1_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[0].data.subfeed_id,
+        default_ans = self.get_example_client_method_result(
+            subfeed_id=self.sub_feed_2.subfeed_id,
             query_params=self.query_params,
-            percentage=self.feed.default.items[0].percentage,
         )
-        default_2_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[1].data.subfeed_id,
-            query_params=self.query_params,
-            percentage=self.feed.default.items[1].percentage,
-        )
-        default_merger_ans = SmartFeedResult(
-            data=(default_1_ans.data + default_2_ans.data),
-            next_page=self.get_next_page(
-                subfeed_data={
-                    self.feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
-                    self.feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
-                }
-            ),
-            has_next_page=True if any([default_1_ans.has_next_page, default_2_ans.has_next_page]) else False,
-        )
-        pos_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.positional.subfeed_id,
+        positional_ans = self.get_example_client_method_result(
+            subfeed_id=self.sub_feed.subfeed_id,
             query_params=self.query_params,
         )
 
-        pos_merger_ans = SmartFeedResult(
-            data=[
-                "x_20",
-                "x_21",
-                "x_22",
-                "x_23",
-                "x_0",
-                "x_1",
-                "x_24",
-                "x_2",
-                "x_25",
-                "x_3",
-                "x_26",
-                "x_4",
-                "x_27",
-                "x_5",
-                "x_28",
-                "x_6",
-                "x_29",
-                "x_7",
-                "x_30",
-                "x_8",
-                "x_31",
-                "x_9",
-                "x_32",
-                "x_10",
-                "x_33",
-                "x_11",
-                "x_34",
-                "x_12",
-                "x_35",
-                "x_13",
-                "x_36",
-                "x_14",
-                "x_37",
-                "x_15",
-                "x_38",
-                "x_16",
-                "x_39",
-                "x_17",
-                "x_60",
-                "x_18",
-                "x_61",
-                "x_19",
-                "x_62",
-                "x_20",
-                "x_63",
-                "x_21",
-                "x_64",
-                "x_22",
-                "x_65",
-                "x_66",
-                "x_67",
-                "x_68",
-                "x_69",
-                "x_70",
-                "x_71",
-                "x_72",
-                "x_73",
-                "x_74",
-                "x_75",
-                "x_76",
-                "x_77",
-                "x_78",
-                "x_79",
-                "x_80",
-                "x_81",
-                "x_82",
-                "x_83",
-                "x_84",
-                "x_85",
-                "x_86",
-                "x_87",
-                "x_88",
-                "x_89",
-            ],
+        mp_with_positions_ans = SmartFeedResult(
+            data=["x_0", "x_10", "x_1", "x_11", "x_12", "x_13", "x_14", "x_15", "x_16", "x_17"],
             next_page=self.get_next_page(
                 subfeed_data={
-                    self.feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
-                    self.feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
-                    self.feed.positional.subfeed_id: pos_ans.next_page,
-                    self.feed.merger_id: SmartFeedResultNextPage(
-                        data={self.feed.merger_id: SmartFeedResultNextPageInside(page=3, after=None)}
+                    self.sub_feed.subfeed_id: positional_ans.next_page,
+                    self.sub_feed_2.subfeed_id: default_ans.next_page,
+                    mp_with_positions.merger_id: SmartFeedResultNextPage(
+                        data={mp_with_positions.merger_id: SmartFeedResultNextPageInside(page=2, after=None)}
                     ),
                 }
             ),
-            has_next_page=True if any([default_merger_ans.has_next_page, pos_ans.has_next_page]) else False,
+            has_next_page=True if any([default_ans.has_next_page, positional_ans.has_next_page]) else False,
+        )
+        mp_with_step_ans = SmartFeedResult(
+            data=["x_10", "x_0", "x_11", "x_12", "x_13", "x_1", "x_14", "x_15", "x_16", "x_2"],
+            next_page=self.get_next_page(
+                subfeed_data={
+                    self.sub_feed.subfeed_id: positional_ans.next_page,
+                    self.sub_feed_2.subfeed_id: default_ans.next_page,
+                    mp_with_step.merger_id: SmartFeedResultNextPage(
+                        data={mp_with_step.merger_id: SmartFeedResultNextPageInside(page=2, after=None)}
+                    ),
+                }
+            ),
+            has_next_page=True if any([default_ans.has_next_page, positional_ans.has_next_page]) else False,
+        )
+        mp_both_ans = SmartFeedResult(
+            data=["x_0", "x_10", "x_1", "x_2", "x_11", "x_3", "x_12", "x_4", "x_13", "x_14"],
+            next_page=self.get_next_page(
+                subfeed_data={
+                    self.sub_feed.subfeed_id: positional_ans.next_page,
+                    self.sub_feed_2.subfeed_id: default_ans.next_page,
+                    mp_both.merger_id: SmartFeedResultNextPage(
+                        data={mp_both.merger_id: SmartFeedResultNextPageInside(page=2, after=None)}
+                    ),
+                }
+            ),
+            has_next_page=True if any([default_ans.has_next_page, positional_ans.has_next_page]) else False,
         )
 
         # Получаем данные из мерджера.
-        pos_merger_data = self.feed.get_data(
+        mp_with_positions_data = mp_with_positions.get_data(
+            methods_dict=self.methods_dict,
+            limit=self.query_params.limit,
+            next_page=self.query_params.next_page,
+            profile_id=self.query_params.profile_id,
+        )
+        mp_with_step_data = mp_with_step.get_data(
+            methods_dict=self.methods_dict,
+            limit=self.query_params.limit,
+            next_page=self.query_params.next_page,
+            profile_id=self.query_params.profile_id,
+        )
+        mp_both_data = mp_both.get_data(
             methods_dict=self.methods_dict,
             limit=self.query_params.limit,
             next_page=self.query_params.next_page,
             profile_id=self.query_params.profile_id,
         )
 
-        print(f"\n\nPositions for 'x': {self.feed.positions}")
-        print(f"\nPositional Merger Data: {pos_merger_data}")
-        assert pos_merger_data == pos_merger_ans
+        print(f"\n\nPositions: {mp_with_positions.positions}")
+        print(f"\nMerger Positional with Positions Data: {mp_with_positions_data}")
+        print(f"\nMerger Positional with Step Data: {mp_with_step_data}")
+        print(f"\nMerger Positional with Positions & Step Data: {mp_both_data}")
+
+        assert mp_with_positions_data == mp_with_positions_ans
+        assert mp_with_step_data == mp_with_step_ans
+        assert mp_both_data == mp_both_ans
 
     def test_feed_get_data(self) -> None:
         """
         Тест для проверки получения данных фида с помощью менеджера фидов.
         """
 
+        self.query_params.next_page = SmartFeedResultNextPage(
+            data={
+                "merger_pos": SmartFeedResultNextPageInside(page=2, after=None),
+                "sf_positional": {},
+                "sf_1_default_merger_of_main": SmartFeedResultNextPageInside(page=2, after=None),
+                "sf_2_default_merger_of_main": SmartFeedResultNextPageInside(page=3, after=None),
+            }
+        )
+
+        feed_manager = FeedManager(config=EXAMPLE_CLIENT_FEED, methods_dict=self.methods_dict)
+        feed = feed_manager.feed_config.feed
+
         # Формируем "правильные ответы".
         default_1_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[0].data.subfeed_id,
+            subfeed_id=feed.default.items[0].data.subfeed_id,
             query_params=self.query_params,
-            percentage=self.feed.default.items[0].percentage,
+            percentage=feed.default.items[0].percentage,
         )
         default_2_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.default.items[1].data.subfeed_id,
+            subfeed_id=feed.default.items[1].data.subfeed_id,
             query_params=self.query_params,
-            percentage=self.feed.default.items[1].percentage,
+            percentage=feed.default.items[1].percentage,
         )
         default_merger_ans = SmartFeedResult(
             data=(default_1_ans.data + default_2_ans.data),
             next_page=self.get_next_page(
                 subfeed_data={
-                    self.feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
-                    self.feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
+                    feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
+                    feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
                 }
             ),
             has_next_page=True if any([default_1_ans.has_next_page, default_2_ans.has_next_page]) else False,
         )
         pos_ans = self.get_example_client_method_result(
-            subfeed_id=self.feed.positional.subfeed_id,
+            subfeed_id=feed.positional.subfeed_id,
             query_params=self.query_params,
         )
 
         feed_ans = SmartFeedResult(
-            data=[
-                "x_20",
-                "x_21",
-                "x_22",
-                "x_23",
-                "x_0",
-                "x_1",
-                "x_24",
-                "x_2",
-                "x_25",
-                "x_3",
-                "x_26",
-                "x_4",
-                "x_27",
-                "x_5",
-                "x_28",
-                "x_6",
-                "x_29",
-                "x_7",
-                "x_30",
-                "x_8",
-                "x_31",
-                "x_9",
-                "x_32",
-                "x_10",
-                "x_33",
-                "x_11",
-                "x_34",
-                "x_12",
-                "x_35",
-                "x_13",
-                "x_36",
-                "x_14",
-                "x_37",
-                "x_15",
-                "x_38",
-                "x_16",
-                "x_39",
-                "x_17",
-                "x_60",
-                "x_18",
-                "x_61",
-                "x_19",
-                "x_62",
-                "x_20",
-                "x_63",
-                "x_21",
-                "x_64",
-                "x_22",
-                "x_65",
-                "x_66",
-                "x_67",
-                "x_68",
-                "x_69",
-                "x_70",
-                "x_71",
-                "x_72",
-                "x_73",
-                "x_74",
-                "x_75",
-                "x_76",
-                "x_77",
-                "x_78",
-                "x_79",
-                "x_80",
-                "x_81",
-                "x_82",
-                "x_83",
-                "x_84",
-                "x_85",
-                "x_86",
-                "x_87",
-                "x_88",
-                "x_89",
-            ],
+            data=["x_0", "x_4", "x_5", "x_6", "x_7", "x_12", "x_13", "x_14", "x_15", "x_16"],
             next_page=self.get_next_page(
                 subfeed_data={
-                    self.feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
-                    self.feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
-                    self.feed.positional.subfeed_id: pos_ans.next_page,
-                    self.feed.merger_id: SmartFeedResultNextPage(
-                        data={self.feed.merger_id: SmartFeedResultNextPageInside(page=3, after=None)}
+                    feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
+                    feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
+                    feed.positional.subfeed_id: pos_ans.next_page,
+                    feed.merger_id: SmartFeedResultNextPage(
+                        data={feed.merger_id: SmartFeedResultNextPageInside(page=3, after=None)}
                     ),
                 }
             ),
@@ -432,7 +347,7 @@ class TestExampleClientConfig:
         )
 
         # Получаем данные из мерджера.
-        feed_data = self.feed_manager.get_data(
+        feed_data = feed_manager.get_data(
             limit=self.query_params.limit,
             next_page=self.query_params.next_page,
             profile_id=self.query_params.profile_id,

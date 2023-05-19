@@ -128,7 +128,8 @@ class MergerPositional(BaseFeedConfigModel):
         # Получаем список позиций с учетом текущей страницы.
         page_positions = []
         available_positions = range(
-            (result.next_page.data[self.merger_id].page - 1) * limit, result.next_page.data[self.merger_id].page * limit
+            (result.next_page.data[self.merger_id].page - 1) * limit,
+            (result.next_page.data[self.merger_id].page * limit) + 1,
         )
         for position in self.positions:
             if position in available_positions:
@@ -155,6 +156,10 @@ class MergerPositional(BaseFeedConfigModel):
         # Формируем общие данные позиционного мерджера.
         for i, post in enumerate(pos_res.data):
             result.data = result.data[: page_positions[i] - 1] + [post] + result.data[page_positions[i] - 1 :]
+
+        # Проверка на возврат данных в количестве не более limit.
+        if len(result.data) > limit:
+            result.data = result.data[:limit]
 
         result.next_page.data[self.merger_id].page += 1
 
