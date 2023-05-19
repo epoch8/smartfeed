@@ -50,4 +50,4 @@ jobs:
 
       - name: Lint with black
         run: |
-          poetry runblack --check --config black.toml smartfeed
+          poetry run black --check --config black.toml smartfeed
