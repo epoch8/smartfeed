@@ -1,6 +1,6 @@
 import base64
 import json
-from typing import Union
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field, validator
 
@@ -39,6 +39,7 @@ class LookyMixer:
         limit: int,
         next_page: SmartFeedResultNextPage,
         profile_id: str,
+        limit_to_return: Optional[int] = None,
     ) -> SmartFeedResult:
         """
         Пример клиентского метода.
@@ -47,13 +48,22 @@ class LookyMixer:
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param profile_id: ID профиля.
+        :param limit_to_return: ограничить кол-во результата.
         :return: массив букв "profile_id" в количестве "limit" штук.
         """
 
-        page = next_page.data[subfeed_id].page
+        data = [f"{profile_id}_{i}" for i in range(1, 1000)]
 
-        data = [f"{profile_id}_{i}" for i in range((page - 1) * limit, page * limit)]
+        from_index = (data.index(next_page.data[subfeed_id].after) + 1) if next_page.data[subfeed_id].after else 0
+        to_index = from_index + limit
+
+        result_data = data[from_index:to_index]
+
+        if isinstance(limit_to_return, int) and limit_to_return > 0:
+            result_data = result_data[:limit_to_return]
+
+        next_page.data[subfeed_id].after = result_data[-1] if result_data else None
         next_page.data[subfeed_id].page += 1
 
-        result = SmartFeedResult(data=data, next_page=next_page, has_next_page=True)
+        result = SmartFeedResult(data=result_data, next_page=next_page, has_next_page=True)
         return result
