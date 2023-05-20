@@ -34,25 +34,25 @@ class LookyMixer:
     """
 
     @staticmethod
-    def looky_method(
+    async def looky_method(
+        user_id: str,
         subfeed_id: str,
         limit: int,
         next_page: SmartFeedResultNextPage,
-        profile_id: str,
         limit_to_return: Optional[int] = None,
     ) -> SmartFeedResult:
         """
         Пример клиентского метода.
 
+        :param user_id: ID профиля.
         :param subfeed_id: ID cубфида.
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
-        :param profile_id: ID профиля.
         :param limit_to_return: ограничить кол-во результата.
         :return: массив букв "profile_id" в количестве "limit" штук.
         """
 
-        data = [f"{profile_id}_{i}" for i in range(1, 1000)]
+        data = [f"{user_id}_{i}" for i in range(1, 1000)]
 
         from_index = (data.index(next_page.data[subfeed_id].after) + 1) if next_page.data[subfeed_id].after else 0
         to_index = from_index + limit

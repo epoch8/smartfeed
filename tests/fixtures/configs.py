@@ -1,5 +1,7 @@
 EXAMPLE_CLIENT_FEED = {
     "version": "1",
+    "view_session": True,
+    "view_session_key": "profile_id",
     "feed": {
         "merger_id": "merger_pos",
         "type": "merger_positional",

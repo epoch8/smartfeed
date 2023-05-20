@@ -20,8 +20,9 @@ class FeedManager:
         self.feed_config = FeedConfig.parse_obj(config)
         self.methods_dict = methods_dict
 
-    def get_data(
+    async def get_data(
         self,
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -29,14 +30,16 @@ class FeedManager:
         """
         Метод для получения данных согласно конфигурации.
 
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: лимит на выдачу данных.
         :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
         :return:
         """
 
-        result = self.feed_config.feed.get_data(
+        result = await self.feed_config.feed.get_data(
             methods_dict=self.methods_dict,
+            user_id=user_id,
             limit=limit,
             next_page=next_page,
             **params,

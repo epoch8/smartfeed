@@ -47,9 +47,10 @@ class BaseFeedConfigModel(ABC, BaseModel):
     """
 
     @abstractmethod
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -58,6 +59,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         Метод для получения данных.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: параметры для метода.
@@ -74,9 +76,10 @@ class MergerAppend(BaseFeedConfigModel):
     type: Literal["merger_append"]
     items: List[FeedTypes]
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -85,6 +88,7 @@ class MergerAppend(BaseFeedConfigModel):
         Метод для получения данных методом append.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: для метода класса.
@@ -97,7 +101,9 @@ class MergerAppend(BaseFeedConfigModel):
         result_limit = limit
         for item in self.items:
             # Получаем данные из позиции мерджера.
-            item_result = item.get_data(methods_dict=methods_dict, limit=result_limit, next_page=next_page, **params)
+            item_result = await item.get_data(
+                methods_dict=methods_dict, user_id=user_id, limit=result_limit, next_page=next_page, **params
+            )
 
             # Добавляем данные позиции к общему результату процентного мерджера.
             result.data.extend(item_result.data)
@@ -145,9 +151,10 @@ class MergerPositional(BaseFeedConfigModel):
                 raise ValueError('"end" must be bigger than "start"')
         return values
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -156,6 +163,7 @@ class MergerPositional(BaseFeedConfigModel):
         Метод для получения данных в позиционном соотношении из данных позиций.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: для метода класса.
@@ -163,7 +171,9 @@ class MergerPositional(BaseFeedConfigModel):
         """
 
         # Получаем данные "default".
-        default_res = self.default.get_data(methods_dict=methods_dict, limit=limit, next_page=next_page, **params)
+        default_res = await self.default.get_data(
+            methods_dict=methods_dict, user_id=user_id, limit=limit, next_page=next_page, **params
+        )
 
         # Формируем результат позиционного мерджера.
         result = SmartFeedResult(
@@ -195,8 +205,8 @@ class MergerPositional(BaseFeedConfigModel):
                     page_positions.append(available_positions.index(position))
 
         # Получаем данные "positional".
-        pos_res = self.positional.get_data(
-            methods_dict=methods_dict, limit=len(page_positions), next_page=next_page, **params
+        pos_res = await self.positional.get_data(
+            methods_dict=methods_dict, user_id=user_id, limit=len(page_positions), next_page=next_page, **params
         )
 
         # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
@@ -240,9 +250,10 @@ class MergerPercentage(BaseFeedConfigModel):
     shuffle: bool
     items: List[MergerPercentageItem]
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -251,6 +262,7 @@ class MergerPercentage(BaseFeedConfigModel):
         Метод для получения данных в процентном соотношении из данных позиций.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: для метода класса.
@@ -262,8 +274,12 @@ class MergerPercentage(BaseFeedConfigModel):
 
         for item in self.items:
             # Получаем данные из позиций процентного мерджера.
-            item_result = item.data.get_data(
-                methods_dict=methods_dict, limit=limit * item.percentage // 100, next_page=next_page, **params
+            item_result = await item.data.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit * item.percentage // 100,
+                next_page=next_page,
+                **params,
             )
 
             # Добавляем данные позиции к общему результату процентного мерджера.
@@ -293,6 +309,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     item_from: MergerPercentageItem
     item_to: MergerPercentageItem
     step: int
+    data_size_to_step: int
     shuffle: bool
 
     @root_validator
@@ -301,9 +318,10 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             raise ValueError('"step" must be in range from 1 to 100')
         return values
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -312,6 +330,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         Метод для получения данных в процентном соотношении с градиентом из данных позиций.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: для метода класса.
@@ -346,10 +365,12 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             limit_to = limit
 
         # Получаем данные позиций from & to.
-        item_from = self.item_from.data.get_data(
-            methods_dict=methods_dict, limit=limit_from, next_page=next_page, **params
+        item_from = await self.item_from.data.get_data(
+            methods_dict=methods_dict, user_id=user_id, limit=limit_from, next_page=next_page, **params
         )
-        item_to = self.item_to.data.get_data(methods_dict=methods_dict, limit=limit_to, next_page=next_page, **params)
+        item_to = await self.item_to.data.get_data(
+            methods_dict=methods_dict, user_id=user_id, limit=limit_to, next_page=next_page, **params
+        )
 
         # Добавляем данные позиции к общему результату процентного мерджера с градиентом.
         result.data.extend(item_from.data)
@@ -382,9 +403,10 @@ class SubFeed(BaseFeedConfigModel):
     type: Literal["subfeed"]
     method_name: str
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
         next_page: SmartFeedResultNextPage,
         **params: Any,
@@ -393,6 +415,7 @@ class SubFeed(BaseFeedConfigModel):
         Метод для получения данных из метода субфида.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: параметры для метода.
@@ -410,8 +433,8 @@ class SubFeed(BaseFeedConfigModel):
         )
 
         # Получаем результат функции клиента в формате SubFeedResult.
-        result = methods_dict[self.method_name](
-            subfeed_id=self.subfeed_id, limit=limit, next_page=subfeed_next_page, **params
+        result = await methods_dict[self.method_name](
+            subfeed_id=self.subfeed_id, user_id=user_id, limit=limit, next_page=subfeed_next_page, **params
         )
         if not isinstance(result, SmartFeedResult):
             raise TypeError(
