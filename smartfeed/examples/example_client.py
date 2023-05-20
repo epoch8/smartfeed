@@ -4,7 +4,7 @@ from typing import Optional, Union
 
 from pydantic import BaseModel, Field, validator
 
-from smartfeed.schemas import SmartFeedResult, SmartFeedResultNextPage
+from smartfeed.schemas import FeedResult, FeedResultNextPage
 
 
 class LookyMixerRequest(BaseModel):
@@ -14,7 +14,7 @@ class LookyMixerRequest(BaseModel):
 
     profile_id: str = Field(...)
     limit: int = Field(...)
-    next_page: Union[str, SmartFeedResultNextPage] = Field(
+    next_page: Union[str, FeedResultNextPage] = Field(
         base64.urlsafe_b64encode(json.dumps({"data": {}}).encode()).decode()
     )
 
@@ -22,9 +22,9 @@ class LookyMixerRequest(BaseModel):
         validate_all = True
 
     @validator("next_page")
-    def validate_next_page(cls, value: Union[str, SmartFeedResultNextPage]) -> Union[str, SmartFeedResultNextPage]:
+    def validate_next_page(cls, value: Union[str, FeedResultNextPage]) -> Union[str, FeedResultNextPage]:
         if isinstance(value, str):
-            return SmartFeedResultNextPage.parse_obj(json.loads(base64.urlsafe_b64decode(value)))
+            return FeedResultNextPage.parse_obj(json.loads(base64.urlsafe_b64decode(value)))
         return value
 
 
@@ -38,9 +38,9 @@ class LookyMixer:
         user_id: str,
         subfeed_id: str,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         limit_to_return: Optional[int] = None,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Пример клиентского метода.
 
@@ -65,5 +65,5 @@ class LookyMixer:
         next_page.data[subfeed_id].after = result_data[-1] if result_data else None
         next_page.data[subfeed_id].page += 1
 
-        result = SmartFeedResult(data=result_data, next_page=next_page, has_next_page=True)
+        result = FeedResult(data=result_data, next_page=next_page, has_next_page=True)
         return result

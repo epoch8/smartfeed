@@ -6,14 +6,14 @@ from smartfeed.examples.example_client import LookyMixer, LookyMixerRequest
 from smartfeed.manager import FeedManager
 from smartfeed.schemas import (
     FeedConfig,
+    FeedResult,
+    FeedResultNextPage,
+    FeedResultNextPageInside,
     MergerAppend,
     MergerPercentage,
     MergerPercentageGradient,
     MergerPercentageItem,
     MergerPositional,
-    SmartFeedResult,
-    SmartFeedResultNextPage,
-    SmartFeedResultNextPageInside,
     SubFeed,
 )
 from tests.fixtures.configs import EXAMPLE_CLIENT_FEED
@@ -34,7 +34,7 @@ class TestExampleClientConfig:
         }
 
     @staticmethod
-    async def get_next_page(subfeed_data: Dict[str, SmartFeedResultNextPage]) -> SmartFeedResultNextPage:
+    async def get_next_page(subfeed_data: Dict[str, FeedResultNextPage]) -> FeedResultNextPage:
         """
         Метод для получения модели курсора пагинации из данных субфидов.
 
@@ -45,12 +45,12 @@ class TestExampleClientConfig:
         subfeed_next_page_data = {}
 
         for subfeed_id, next_page in subfeed_data.items():
-            subfeed_next_page_data[subfeed_id] = SmartFeedResultNextPageInside(
+            subfeed_next_page_data[subfeed_id] = FeedResultNextPageInside(
                 page=next_page.data[subfeed_id].page if subfeed_id in next_page.data else 1,
                 after=next_page.data[subfeed_id].after if subfeed_id in next_page.data else None,
             )
 
-        subfeed_next_page = SmartFeedResultNextPage(data=subfeed_next_page_data)
+        subfeed_next_page = FeedResultNextPage(data=subfeed_next_page_data)
         return subfeed_next_page
 
     async def get_example_client_method_result(
@@ -59,7 +59,7 @@ class TestExampleClientConfig:
         query_params: LookyMixerRequest,
         percentage: int = 0,
         limit_to_return: Optional[int] = None,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных метода example_client.
 
@@ -124,8 +124,8 @@ class TestExampleClientConfig:
         Тест для проверки получения данных процентного мерджера.
         """
 
-        self.query_params.next_page = SmartFeedResultNextPage(
-            data={"ec_sub_feed_2": SmartFeedResultNextPageInside(page=5, after="x_12")}
+        self.query_params.next_page = FeedResultNextPage(
+            data={"ec_sub_feed_2": FeedResultNextPageInside(page=5, after="x_12")}
         )
 
         item_1 = MergerPercentageItem(percentage=70, data=self.sub_feed)
@@ -154,7 +154,7 @@ class TestExampleClientConfig:
             query_params=self.query_params,
             percentage=item_2.percentage,
         )
-        merger_percentage_ans = SmartFeedResult(
+        merger_percentage_ans = FeedResult(
             data=(item_1_ans.data + item_2_ans.data),
             next_page=await self.get_next_page(
                 subfeed_data={
@@ -193,10 +193,10 @@ class TestExampleClientConfig:
         Тест для проверки получения данных позиционного мерджера.
         """
 
-        self.query_params.next_page = SmartFeedResultNextPage(
+        self.query_params.next_page = FeedResultNextPage(
             data={
-                "ec_merger_positional_with_positions": SmartFeedResultNextPageInside(page=2, after=None),
-                "ec_sub_feed_2": SmartFeedResultNextPageInside(page=3, after="x_20"),
+                "ec_merger_positional_with_positions": FeedResultNextPageInside(page=2, after=None),
+                "ec_sub_feed_2": FeedResultNextPageInside(page=3, after="x_20"),
             }
         )
 
@@ -238,14 +238,14 @@ class TestExampleClientConfig:
         )
 
         positional_ans.next_page.data[self.sub_feed.subfeed_id].after = "x_1"
-        mp_with_positions_ans = SmartFeedResult(
+        mp_with_positions_ans = FeedResult(
             data=["x_21", "x_1", "x_22", "x_23", "x_24", "x_25", "x_26", "x_27", "x_28", "x_29"],
             next_page=await self.get_next_page(
                 subfeed_data={
                     self.sub_feed.subfeed_id: positional_ans.next_page,
                     self.sub_feed_2.subfeed_id: default_ans.next_page,
-                    mp_with_positions.merger_id: SmartFeedResultNextPage(
-                        data={mp_with_positions.merger_id: SmartFeedResultNextPageInside(page=3, after=None)}
+                    mp_with_positions.merger_id: FeedResultNextPage(
+                        data={mp_with_positions.merger_id: FeedResultNextPageInside(page=3, after=None)}
                     ),
                 }
             ),
@@ -253,14 +253,14 @@ class TestExampleClientConfig:
         )
 
         positional_ans.next_page.data[self.sub_feed.subfeed_id].after = "x_3"
-        mp_with_step_ans = SmartFeedResult(
+        mp_with_step_ans = FeedResult(
             data=["x_21", "x_1", "x_22", "x_23", "x_24", "x_2", "x_25", "x_26", "x_27", "x_3"],
             next_page=await self.get_next_page(
                 subfeed_data={
                     self.sub_feed.subfeed_id: positional_ans.next_page,
                     self.sub_feed_2.subfeed_id: default_ans.next_page,
-                    mp_with_step.merger_id: SmartFeedResultNextPage(
-                        data={mp_with_step.merger_id: SmartFeedResultNextPageInside(page=2, after=None)}
+                    mp_with_step.merger_id: FeedResultNextPage(
+                        data={mp_with_step.merger_id: FeedResultNextPageInside(page=2, after=None)}
                     ),
                 }
             ),
@@ -268,14 +268,14 @@ class TestExampleClientConfig:
         )
 
         positional_ans.next_page.data[self.sub_feed.subfeed_id].after = "x_5"
-        mp_both_ans = SmartFeedResult(
+        mp_both_ans = FeedResult(
             data=["x_1", "x_21", "x_2", "x_3", "x_22", "x_4", "x_23", "x_5", "x_24", "x_25"],
             next_page=await self.get_next_page(
                 subfeed_data={
                     self.sub_feed.subfeed_id: positional_ans.next_page,
                     self.sub_feed_2.subfeed_id: default_ans.next_page,
-                    mp_both.merger_id: SmartFeedResultNextPage(
-                        data={mp_both.merger_id: SmartFeedResultNextPageInside(page=2, after=None)}
+                    mp_both.merger_id: FeedResultNextPage(
+                        data={mp_both.merger_id: FeedResultNextPageInside(page=2, after=None)}
                     ),
                 }
             ),
@@ -317,8 +317,8 @@ class TestExampleClientConfig:
         Тест для проверки получения данных append мерджера.
         """
 
-        self.query_params.next_page = SmartFeedResultNextPage(
-            data={"ec_sub_feed_2": SmartFeedResultNextPageInside(page=10, after="x_27")}
+        self.query_params.next_page = FeedResultNextPage(
+            data={"ec_sub_feed_2": FeedResultNextPageInside(page=10, after="x_27")}
         )
 
         merger_append = MergerAppend(
@@ -340,7 +340,7 @@ class TestExampleClientConfig:
             percentage=30,
             limit_to_return=7,
         )
-        merger_append_ans = SmartFeedResult(
+        merger_append_ans = FeedResult(
             data=(item_1_ans.data + item_2_ans.data),
             next_page=await self.get_next_page(
                 subfeed_data={
@@ -370,10 +370,10 @@ class TestExampleClientConfig:
         Тест для проверки получения данных процентного мерджера с градиентом.
         """
 
-        self.query_params.next_page = SmartFeedResultNextPage(
+        self.query_params.next_page = FeedResultNextPage(
             data={
-                "ec_merger_percentage_gradient": SmartFeedResultNextPageInside(page=3, after=None),
-                "ec_sub_feed_2": SmartFeedResultNextPageInside(page=3, after="x_6"),
+                "ec_merger_percentage_gradient": FeedResultNextPageInside(page=3, after=None),
+                "ec_sub_feed_2": FeedResultNextPageInside(page=3, after="x_6"),
             }
         )
 
@@ -385,7 +385,7 @@ class TestExampleClientConfig:
             item_from=item_1,
             item_to=item_2,
             step=20,
-            data_size_to_step=30,
+            size_to_step=30,
             shuffle=False,
         )
         mp_gradient_shuffled = MergerPercentageGradient(
@@ -394,7 +394,7 @@ class TestExampleClientConfig:
             item_from=item_1,
             item_to=item_2,
             step=20,
-            data_size_to_step=30,
+            size_to_step=30,
             shuffle=True,
         )
 
@@ -409,12 +409,12 @@ class TestExampleClientConfig:
             query_params=self.query_params,
             percentage=item_2.percentage + 40,
         )
-        mp_gradient_ans = SmartFeedResult(
+        mp_gradient_ans = FeedResult(
             data=(item_1_ans.data + item_2_ans.data),
             next_page=await self.get_next_page(
                 subfeed_data={
-                    mp_gradient.merger_id: SmartFeedResultNextPage(
-                        data={mp_gradient.merger_id: SmartFeedResultNextPageInside(page=4, after=None)}
+                    mp_gradient.merger_id: FeedResultNextPage(
+                        data={mp_gradient.merger_id: FeedResultNextPageInside(page=4, after=None)}
                     ),
                     item_1.data.subfeed_id: item_1_ans.next_page,
                     item_2.data.subfeed_id: item_2_ans.next_page,
@@ -451,12 +451,12 @@ class TestExampleClientConfig:
         Тест для проверки получения данных фида с помощью менеджера фидов.
         """
 
-        self.query_params.next_page = SmartFeedResultNextPage(
+        self.query_params.next_page = FeedResultNextPage(
             data={
-                "merger_pos": SmartFeedResultNextPageInside(page=2, after=None),
-                "sf_positional": SmartFeedResultNextPageInside(page=9, after="x_24"),
-                "sf_1_default_merger_of_main": SmartFeedResultNextPageInside(page=1, after=None),
-                "sf_2_default_merger_of_main": SmartFeedResultNextPageInside(page=10, after="x_36"),
+                "merger_pos": FeedResultNextPageInside(page=2, after=None),
+                "sf_positional": FeedResultNextPageInside(page=9, after="x_24"),
+                "sf_1_default_merger_of_main": FeedResultNextPageInside(page=1, after=None),
+                "sf_2_default_merger_of_main": FeedResultNextPageInside(page=10, after="x_36"),
             }
         )
 
@@ -474,7 +474,7 @@ class TestExampleClientConfig:
             query_params=self.query_params,
             percentage=feed.default.items[1].percentage,
         )
-        default_merger_ans = SmartFeedResult(
+        default_merger_ans = FeedResult(
             data=(default_1_ans.data + default_2_ans.data),
             next_page=await self.get_next_page(
                 subfeed_data={
@@ -488,15 +488,15 @@ class TestExampleClientConfig:
             subfeed_id=feed.positional.subfeed_id, query_params=self.query_params, limit_to_return=3
         )
 
-        feed_ans = SmartFeedResult(
+        feed_ans = FeedResult(
             data=["x_1", "x_2", "x_3", "x_4", "x_25", "x_37", "x_26", "x_38", "x_27", "x_39"],
             next_page=await self.get_next_page(
                 subfeed_data={
                     feed.default.items[0].data.subfeed_id: default_1_ans.next_page,
                     feed.default.items[1].data.subfeed_id: default_2_ans.next_page,
                     feed.positional.subfeed_id: pos_ans.next_page,
-                    feed.merger_id: SmartFeedResultNextPage(
-                        data={feed.merger_id: SmartFeedResultNextPageInside(page=3, after=None)}
+                    feed.merger_id: FeedResultNextPage(
+                        data={feed.merger_id: FeedResultNextPageInside(page=3, after=None)}
                     ),
                 }
             ),

@@ -14,30 +14,42 @@ FeedTypes = Annotated[
 ]
 
 
-class SmartFeedResultNextPageInside(BaseModel):
+class FeedResultNextPageInside(BaseModel):
     """
     Модель данных курсора пагинации конкретной позиции.
+
+    Attributes:
+        page        порядковый номер страницы.
+        after       данные для пагинации клиентского метода.
     """
 
     page: int = 1
     after: Any = None
 
 
-class SmartFeedResultNextPage(BaseModel):
+class FeedResultNextPage(BaseModel):
     """
     Модель курсора пагинации.
+
+    Attributes:
+        data        словарь вида "ключ: данные по пагинации", где ключ - subfeed_id или merger_id.
     """
 
-    data: Dict[str, SmartFeedResultNextPageInside]
+    data: Dict[str, FeedResultNextPageInside]
 
 
-class SmartFeedResult(BaseModel):
+class FeedResult(BaseModel):
     """
     Модель результата метода get_data() любой позиции / целого фида.
+
+    Attributes:
+        data                список данных, возвращенных мерджером / субфидом.
+        next_page           курсор пагинации.
+        has_next_page       флаг наличия следующей страницы данных.
     """
 
     data: List
-    next_page: SmartFeedResultNextPage
+    next_page: FeedResultNextPage
     has_next_page: bool
 
 
@@ -52,9 +64,9 @@ class BaseFeedConfigModel(ABC, BaseModel):
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных.
 
@@ -70,6 +82,11 @@ class BaseFeedConfigModel(ABC, BaseModel):
 class MergerAppend(BaseFeedConfigModel):
     """
     Модель append мерджера.
+
+    Attributes:
+        merger_id     уникальный ID мерджера.
+        type          тип объекта - всегда "merger_append".
+        items         позиции мерджера.
     """
 
     merger_id: str
@@ -81,9 +98,9 @@ class MergerAppend(BaseFeedConfigModel):
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных методом append.
 
@@ -96,7 +113,7 @@ class MergerAppend(BaseFeedConfigModel):
         """
 
         # Формируем результат append мерджера.
-        result = SmartFeedResult(data=[], next_page=SmartFeedResultNextPage(data={}), has_next_page=False)
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
         result_limit = limit
         for item in self.items:
@@ -128,6 +145,16 @@ class MergerAppend(BaseFeedConfigModel):
 class MergerPositional(BaseFeedConfigModel):
     """
     Модель позиционного мерджера.
+
+    Attributes:
+        merger_id       уникальный ID мерджера.
+        type            тип объекта - всегда "merger_positional".
+        positions       позиции для вставки из мерджера / субфида "positional" [обязателен, если нет start, end, step].
+        start           начальная позиция [обязателен, если нет positions].
+        end             завершающая позиция [обязателен, если нет positions].
+        step            шаг позиций между "start" и "end" [обязателен, если нет positions].
+        positional      мерджер / субфид из которого берутся позиционные данные.
+        default         мерджер / субфид из которого берутся остальные данные.
     """
 
     merger_id: str
@@ -156,9 +183,9 @@ class MergerPositional(BaseFeedConfigModel):
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных в позиционном соотношении из данных позиций.
 
@@ -176,11 +203,11 @@ class MergerPositional(BaseFeedConfigModel):
         )
 
         # Формируем результат позиционного мерджера.
-        result = SmartFeedResult(
+        result = FeedResult(
             data=default_res.data,
-            next_page=SmartFeedResultNextPage(
+            next_page=FeedResultNextPage(
                 data={
-                    self.merger_id: SmartFeedResultNextPageInside(
+                    self.merger_id: FeedResultNextPageInside(
                         page=next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1,
                         after=next_page.data[self.merger_id].after if self.merger_id in next_page.data else None,
                     )
@@ -234,6 +261,10 @@ class MergerPositional(BaseFeedConfigModel):
 class MergerPercentageItem(BaseModel):
     """
     Модель позиции процентного мерджера.
+
+    Attributes:
+        percentage      процент позиции в мерджере.
+        data            мерджер / субфид.
     """
 
     percentage: int
@@ -243,6 +274,12 @@ class MergerPercentageItem(BaseModel):
 class MergerPercentage(BaseFeedConfigModel):
     """
     Модель процентного мерджера.
+
+    Attributes:
+        merger_id     уникальный ID мерджера.
+        type          тип объекта - всегда "merger_percentage".
+        shuffle       флаг для перемешивания полученных данных мерджера.
+        items         позиции мерджера.
     """
 
     merger_id: str
@@ -255,9 +292,9 @@ class MergerPercentage(BaseFeedConfigModel):
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных в процентном соотношении из данных позиций.
 
@@ -270,7 +307,7 @@ class MergerPercentage(BaseFeedConfigModel):
         """
 
         # Формируем результат процентного мерджера.
-        result = SmartFeedResult(data=[], next_page=SmartFeedResultNextPage(data={}), has_next_page=False)
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
         for item in self.items:
             # Получаем данные из позиций процентного мерджера.
@@ -302,6 +339,15 @@ class MergerPercentage(BaseFeedConfigModel):
 class MergerPercentageGradient(BaseFeedConfigModel):
     """
     Модель процентного мерджера с градиентном.
+
+    Attributes:
+        merger_id       уникальный ID мерджера.
+        type            тип объекта - всегда "merger_percentage_gradient".
+        item_from       мерджер / субфид из которого начинается "перетекание" градиента.
+        item_to         мерджер / субфид в который "перетекает" градиент.
+        step            изменение в % соотношения из item_from в item_to.
+        size_to_step    шаг для применения изменений % соотношения (например, через каждые 30 позиций).
+        shuffle         флаг для перемешивания полученных данных мерджера.
     """
 
     merger_id: str
@@ -309,7 +355,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     item_from: MergerPercentageItem
     item_to: MergerPercentageItem
     step: int
-    data_size_to_step: int
+    size_to_step: int
     shuffle: bool
 
     @root_validator
@@ -323,9 +369,9 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных в процентном соотношении с градиентом из данных позиций.
 
@@ -338,11 +384,11 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         """
 
         # Формируем результат процентного мерджера с градиентом.
-        result = SmartFeedResult(
+        result = FeedResult(
             data=[],
-            next_page=SmartFeedResultNextPage(
+            next_page=FeedResultNextPage(
                 data={
-                    self.merger_id: SmartFeedResultNextPageInside(
+                    self.merger_id: FeedResultNextPageInside(
                         page=next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1,
                         after=next_page.data[self.merger_id].after if self.merger_id in next_page.data else None,
                     )
@@ -397,6 +443,11 @@ class MergerPercentageGradient(BaseFeedConfigModel):
 class SubFeed(BaseFeedConfigModel):
     """
     Модель субфида.
+
+    Attributes:
+        subfeed_id      уникальный ID субфида.
+        type            тип объекта - всегда "subfeed".
+        method_name     название клиентского метода для получения данных субфида.
     """
 
     subfeed_id: str
@@ -408,9 +459,9 @@ class SubFeed(BaseFeedConfigModel):
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных из метода субфида.
 
@@ -423,9 +474,9 @@ class SubFeed(BaseFeedConfigModel):
         """
 
         # Формируем next_page конкретного субфида.
-        subfeed_next_page = SmartFeedResultNextPage(
+        subfeed_next_page = FeedResultNextPage(
             data={
-                self.subfeed_id: SmartFeedResultNextPageInside(
+                self.subfeed_id: FeedResultNextPageInside(
                     page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
                     after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
                 )
@@ -436,7 +487,7 @@ class SubFeed(BaseFeedConfigModel):
         result = await methods_dict[self.method_name](
             subfeed_id=self.subfeed_id, user_id=user_id, limit=limit, next_page=subfeed_next_page, **params
         )
-        if not isinstance(result, SmartFeedResult):
+        if not isinstance(result, FeedResult):
             raise TypeError(
                 'SubFeed function must return "SubFeedResult" instance (from smartfeed.schemas import SubFeedResult).'
             )
@@ -447,9 +498,19 @@ class SubFeed(BaseFeedConfigModel):
 class FeedConfig(BaseModel):
     """
     Модель конфигурации фида.
+
+    Attributes:
+        version             версия конфигурации.
+        view_session        флаг использования механизма расчета всего фида сразу и сохранения в кэш.
+        session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
+        session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
+        feed                мерджер или субфид.
     """
 
     version: str
+    view_session: bool
+    session_size: int
+    session_live_time: int
     feed: FeedTypes
 
 

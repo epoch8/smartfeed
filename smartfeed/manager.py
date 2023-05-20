@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from .schemas import FeedConfig, SmartFeedResult, SmartFeedResultNextPage
+from .schemas import FeedConfig, FeedResult, FeedResultNextPage
 
 
 class FeedManager:
@@ -24,9 +24,9 @@ class FeedManager:
         self,
         user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных согласно конфигурации.
 
