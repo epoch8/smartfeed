@@ -362,7 +362,55 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     def validate_merger_percentage_gradient(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         if values["step"] < 1 or values["step"] > 100:
             raise ValueError('"step" must be in range from 1 to 100')
+        if values["size_to_step"] < 1:
+            raise ValueError('"size_to_step" must be bigger than 1')
         return values
+
+    async def _calculate_limits_and_percents(self, page: int, limit: int) -> List[Dict[str, int]]:
+        """
+        Метод для получения списка лимитов данных с процентным соотношением позиций item_from & item_to,
+        учитывая градиентное изменение соотношений.
+
+        :param page: порядковый номер страницы.
+        :param limit: общий лимит данных для страницы.
+        :return: список лимитов данных с процентным соотношением позиций item_from & item_to.
+        """
+
+        result: List = []
+
+        percentage_from = self.item_from.percentage
+        percentage_to = self.item_to.percentage
+        start_position = limit * (page - 1)
+        first_iter = True
+
+        for i in range(self.size_to_step, limit * page + self.size_to_step, self.size_to_step):
+            # При первой итерации и percentage_to >= 100 не меняем соотношение % между позициями.
+            if not first_iter and percentage_to < 100:
+                # Меняем процентное соотношение позиций на "шаг", указанный в конфигурации.
+                percentage_from -= self.step
+                percentage_to += self.step
+
+                # Если процентное соотношение вышло за 100+, то устанавливаем предельные значения.
+                if percentage_to > 100 or percentage_from < 0:
+                    percentage_from = 0
+                    percentage_to = 100
+
+            # Если индекс итерации по величине больше стартовой позиции согласно переданной странице,
+            # то начинаем обработку.
+            if i > start_position:
+                # Рассчитываем лимит получения данных для конкретной итерации.
+                iter_limit = (limit * page - start_position) if i > limit * page else (i - start_position)
+                start_position = i
+
+                # Формируем результат для каждой итерации и добавляем в возвращаемый список.
+                iter_result = {"limit": iter_limit, "from": percentage_from, "to": percentage_to}
+                result.append(iter_result)
+
+            # Если первая итерация цикла
+            if first_iter:
+                first_iter = False
+
+        return result
 
     async def get_data(
         self,
@@ -397,38 +445,41 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             has_next_page=False,
         )
 
-        # Формируем limit для позиций from и to в соответствии с процентом, шагом и страницей.
-        limit_from = (
-            limit * (self.item_from.percentage - self.step * (result.next_page.data[self.merger_id].page - 1)) // 100
-        )
-        limit_to = (
-            limit * (self.item_to.percentage + self.step * (result.next_page.data[self.merger_id].page - 1)) // 100
+        # Получаем список лимитов данных и соотношений согласно странице и градиенту.
+        limits_and_percent = await self._calculate_limits_and_percents(
+            page=result.next_page.data[self.merger_id].page,
+            limit=limit,
         )
 
-        # Если limit_to превысил limit, то соотношение from - to будет 0% - 100%.
-        if limit_to > limit:
-            limit_from = 0
-            limit_to = limit
+        for index, lp_data in enumerate(limits_and_percent):
+            # Высчитываем лимиты для каждой позиции исходя из процентного соотношения.
+            limit_from = lp_data["limit"] * lp_data["from"] // 100
+            limit_to = lp_data["limit"] * lp_data["to"] // 100
 
-        # Получаем данные позиций from & to.
-        item_from = await self.item_from.data.get_data(
-            methods_dict=methods_dict, user_id=user_id, limit=limit_from, next_page=next_page, **params
-        )
-        item_to = await self.item_to.data.get_data(
-            methods_dict=methods_dict, user_id=user_id, limit=limit_to, next_page=next_page, **params
-        )
+            # При первой итерации используем next_page из запроса, при последующих из текущего мерджера.
+            lp_next_page = next_page if index == 0 else result.next_page
 
-        # Добавляем данные позиции к общему результату процентного мерджера с градиентом.
-        result.data.extend(item_from.data)
-        result.data.extend(item_to.data)
+            # Получаем данные из позиций в процентном соотношений.
+            item_from = await self.item_from.data.get_data(
+                methods_dict=methods_dict, user_id=user_id, limit=limit_from, next_page=lp_next_page, **params
+            )
+            item_to = await self.item_to.data.get_data(
+                methods_dict=methods_dict, user_id=user_id, limit=limit_to, next_page=lp_next_page, **params
+            )
 
-        # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
-        if not result.has_next_page and any([item_from.has_next_page]):
-            result.has_next_page = True
+            # Добавляем данные позиции к общему результату процентного мерджера с градиентом.
+            result.data.extend(item_from.data)
+            result.data.extend(item_to.data)
 
-        # Обновляем next_page.
-        result.next_page.data.update(item_from.next_page.data)
-        result.next_page.data.update(item_to.next_page.data)
+            # Обновляем next_page.
+            result.next_page.data.update(item_from.next_page.data)
+            result.next_page.data.update(item_to.next_page.data)
+
+            # При последней итерации обновляем параметр has_next_page.
+            if index == len(limits_and_percent) - 1:
+                # Если has_next_page = False, то проверяем has_next_page у позиций и, если необходимо, обновляем.
+                if any([item_from.has_next_page, item_to.has_next_page]):
+                    result.has_next_page = True
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:

@@ -365,26 +365,75 @@ class TestExampleClientConfig:
         assert merger_append_data == merger_append_ans
 
     @pytest.mark.asyncio
+    async def test_merger_percentage_gradient_calculate_limits_and_percents(self) -> None:
+        """
+        Тест для проверки получения списка лимитов данных с процентным соотношением позиций item_from & item_to,
+        учитывая градиентное изменение соотношений.
+        """
+
+        item_1 = MergerPercentageItem(percentage=70, data=self.sub_feed)
+        item_2 = MergerPercentageItem(percentage=30, data=self.sub_feed_2)
+        mp_gradient_1 = MergerPercentageGradient(
+            merger_id="ec_merger_percentage_gradient",
+            type="merger_percentage_gradient",
+            item_from=item_1,
+            item_to=item_2,
+            step=8,
+            size_to_step=30,
+            shuffle=False,
+        )
+        mp_gradient_1_limits_and_percents_ans = [
+            {"limit": 7, "from": 30, "to": 70},
+            {"limit": 30, "from": 22, "to": 78},
+            {"limit": 30, "from": 14, "to": 86},
+            {"limit": 30, "from": 6, "to": 94},
+            {"limit": 30, "from": 0, "to": 100},
+            {"limit": 30, "from": 0, "to": 100},
+            {"limit": 16, "from": 0, "to": 100},
+        ]
+        mp_gradient_1_limits_and_percents_data = await mp_gradient_1._calculate_limits_and_percents(page=2, limit=173)
+
+        mp_gradient_2 = MergerPercentageGradient(
+            merger_id="ec_merger_percentage_gradient",
+            type="merger_percentage_gradient",
+            item_from=item_1,
+            item_to=item_2,
+            step=1,
+            size_to_step=43,
+            shuffle=False,
+        )
+        mp_gradient_2_limits_and_percents_ans = [
+            {"limit": 5, "from": 57, "to": 43},
+            {"limit": 43, "from": 56, "to": 44},
+            {"limit": 43, "from": 55, "to": 45},
+            {"limit": 43, "from": 54, "to": 46},
+            {"limit": 43, "from": 53, "to": 47},
+            {"limit": 22, "from": 52, "to": 48},
+        ]
+        mp_gradient_2_limits_and_percents_data = await mp_gradient_2._calculate_limits_and_percents(page=4, limit=199)
+
+        assert mp_gradient_1_limits_and_percents_data == mp_gradient_1_limits_and_percents_ans
+        assert mp_gradient_2_limits_and_percents_data == mp_gradient_2_limits_and_percents_ans
+
+    @pytest.mark.asyncio
     async def test_merger_percentage_gradient_get_data(self) -> None:
         """
         Тест для проверки получения данных процентного мерджера с градиентом.
         """
 
+        self.query_params.limit = 30
         self.query_params.next_page = FeedResultNextPage(
-            data={
-                "ec_merger_percentage_gradient": FeedResultNextPageInside(page=3, after=None),
-                "ec_sub_feed_2": FeedResultNextPageInside(page=3, after="x_6"),
-            }
+            data={"ec_merger_percentage_gradient": FeedResultNextPageInside(page=3, after=None)}
         )
 
-        item_1 = MergerPercentageItem(percentage=80, data=self.sub_feed)
-        item_2 = MergerPercentageItem(percentage=20, data=self.sub_feed_2)
+        item_1 = MergerPercentageItem(percentage=75, data=self.sub_feed)
+        item_2 = MergerPercentageItem(percentage=25, data=self.sub_feed_2)
         mp_gradient = MergerPercentageGradient(
             merger_id="ec_merger_percentage_gradient",
             type="merger_percentage_gradient",
             item_from=item_1,
             item_to=item_2,
-            step=20,
+            step=25,
             size_to_step=30,
             shuffle=False,
         )
@@ -393,7 +442,7 @@ class TestExampleClientConfig:
             type="merger_percentage_gradient",
             item_from=item_1,
             item_to=item_2,
-            step=20,
+            step=25,
             size_to_step=30,
             shuffle=True,
         )
@@ -402,12 +451,12 @@ class TestExampleClientConfig:
         item_1_ans = await self.get_example_client_method_result(
             subfeed_id=item_1.data.subfeed_id,
             query_params=self.query_params,
-            percentage=item_1.percentage - 40,
+            percentage=item_1.percentage - 50,
         )
         item_2_ans = await self.get_example_client_method_result(
             subfeed_id=item_2.data.subfeed_id,
             query_params=self.query_params,
-            percentage=item_2.percentage + 40,
+            percentage=item_2.percentage + 50,
         )
         mp_gradient_ans = FeedResult(
             data=(item_1_ans.data + item_2_ans.data),

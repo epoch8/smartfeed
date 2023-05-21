@@ -14,7 +14,6 @@ class FeedManager:
 
         :param config: конфигурация.
         :param methods_dict: словарь с используемыми методами.
-        :return: объект Feed.
         """
 
         self.feed_config = FeedConfig.parse_obj(config)
@@ -34,7 +33,7 @@ class FeedManager:
         :param limit: лимит на выдачу данных.
         :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return:
+        :return: результат получения данных согласно конфигурации фида.
         """
 
         result = await self.feed_config.feed.get_data(
