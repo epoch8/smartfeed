@@ -14,30 +14,42 @@ FeedTypes = Annotated[
 ]
 
 
-class SmartFeedResultNextPageInside(BaseModel):
+class FeedResultNextPageInside(BaseModel):
     """
-    Модель данных курсора пагинации конкретного субфида.
+    Модель данных курсора пагинации конкретной позиции.
+
+    Attributes:
+        page        порядковый номер страницы.
+        after       данные для пагинации клиентского метода.
     """
 
     page: int = 1
     after: Any = None
 
 
-class SmartFeedResultNextPage(BaseModel):
+class FeedResultNextPage(BaseModel):
     """
     Модель курсора пагинации.
+
+    Attributes:
+        data        словарь вида "ключ: данные по пагинации", где ключ - subfeed_id или merger_id.
     """
 
-    data: Dict[str, SmartFeedResultNextPageInside]
+    data: Dict[str, FeedResultNextPageInside]
 
 
-class SmartFeedResult(BaseModel):
+class FeedResult(BaseModel):
     """
-    Модель результата метода get_data() любой конфигурации.
+    Модель результата метода get_data() любой позиции / целого фида.
+
+    Attributes:
+        data                список данных, возвращенных мерджером / субфидом.
+        next_page           курсор пагинации.
+        has_next_page       флаг наличия следующей страницы данных.
     """
 
     data: List
-    next_page: SmartFeedResultNextPage
+    next_page: FeedResultNextPage
     has_next_page: bool
 
 
@@ -47,17 +59,19 @@ class BaseFeedConfigModel(ABC, BaseModel):
     """
 
     @abstractmethod
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
         Метод для получения данных.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: параметры для метода.
@@ -65,9 +79,82 @@ class BaseFeedConfigModel(ABC, BaseModel):
         """
 
 
+class MergerAppend(BaseFeedConfigModel):
+    """
+    Модель append мерджера.
+
+    Attributes:
+        merger_id     уникальный ID мерджера.
+        type          тип объекта - всегда "merger_append".
+        items         позиции мерджера.
+    """
+
+    merger_id: str
+    type: Literal["merger_append"]
+    items: List[FeedTypes]
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных методом append.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param params: для метода класса.
+        :return: список данных методом append.
+        """
+
+        # Формируем результат append мерджера.
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+
+        result_limit = limit
+        for item in self.items:
+            # Получаем данные из позиции мерджера.
+            item_result = await item.get_data(
+                methods_dict=methods_dict, user_id=user_id, limit=result_limit, next_page=next_page, **params
+            )
+
+            # Добавляем данные позиции к общему результату процентного мерджера.
+            result.data.extend(item_result.data)
+
+            # Обновляем result_limit
+            result_limit -= len(item_result.data)
+
+            # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
+            if not result.has_next_page and item_result.has_next_page:
+                result.has_next_page = True
+
+            # Обновляем next_page.
+            result.next_page.data.update(item_result.next_page.data)
+
+            # Если полученных данных хватает, то прерываем итерацию и возвращаем результат.
+            if result_limit <= 0:
+                break
+
+        return result
+
+
 class MergerPositional(BaseFeedConfigModel):
     """
     Модель позиционного мерджера.
+
+    Attributes:
+        merger_id       уникальный ID мерджера.
+        type            тип объекта - всегда "merger_positional".
+        positions       позиции для вставки из мерджера / субфида "positional" [обязателен, если нет start, end, step].
+        start           начальная позиция [обязателен, если нет positions].
+        end             завершающая позиция [обязателен, если нет positions].
+        step            шаг позиций между "start" и "end" [обязателен, если нет positions].
+        positional      мерджер / субфид из которого берутся позиционные данные.
+        default         мерджер / субфид из которого берутся остальные данные.
     """
 
     merger_id: str
@@ -91,17 +178,19 @@ class MergerPositional(BaseFeedConfigModel):
                 raise ValueError('"end" must be bigger than "start"')
         return values
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
-        Метод для получения данных в позиционном соотношении из данных субфидов.
+        Метод для получения данных в позиционном соотношении из данных позиций.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: для метода класса.
@@ -109,14 +198,16 @@ class MergerPositional(BaseFeedConfigModel):
         """
 
         # Получаем данные "default".
-        default_res = self.default.get_data(methods_dict=methods_dict, limit=limit, next_page=next_page, **params)
+        default_res = await self.default.get_data(
+            methods_dict=methods_dict, user_id=user_id, limit=limit, next_page=next_page, **params
+        )
 
         # Формируем результат позиционного мерджера.
-        result = SmartFeedResult(
+        result = FeedResult(
             data=default_res.data,
-            next_page=SmartFeedResultNextPage(
+            next_page=FeedResultNextPage(
                 data={
-                    self.merger_id: SmartFeedResultNextPageInside(
+                    self.merger_id: FeedResultNextPageInside(
                         page=next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1,
                         after=next_page.data[self.merger_id].after if self.merger_id in next_page.data else None,
                     )
@@ -141,8 +232,8 @@ class MergerPositional(BaseFeedConfigModel):
                     page_positions.append(available_positions.index(position))
 
         # Получаем данные "positional".
-        pos_res = self.positional.get_data(
-            methods_dict=methods_dict, limit=len(page_positions), next_page=next_page, **params
+        pos_res = await self.positional.get_data(
+            methods_dict=methods_dict, user_id=user_id, limit=len(page_positions), next_page=next_page, **params
         )
 
         # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
@@ -161,6 +252,7 @@ class MergerPositional(BaseFeedConfigModel):
         if len(result.data) > limit:
             result.data = result.data[:limit]
 
+        # Обновляем страницу для курсора пагинации мерджера.
         result.next_page.data[self.merger_id].page += 1
 
         return result
@@ -169,6 +261,10 @@ class MergerPositional(BaseFeedConfigModel):
 class MergerPercentageItem(BaseModel):
     """
     Модель позиции процентного мерджера.
+
+    Attributes:
+        percentage      процент позиции в мерджере.
+        data            мерджер / субфид.
     """
 
     percentage: int
@@ -178,6 +274,12 @@ class MergerPercentageItem(BaseModel):
 class MergerPercentage(BaseFeedConfigModel):
     """
     Модель процентного мерджера.
+
+    Attributes:
+        merger_id     уникальный ID мерджера.
+        type          тип объекта - всегда "merger_percentage".
+        shuffle       флаг для перемешивания полученных данных мерджера.
+        items         позиции мерджера.
     """
 
     merger_id: str
@@ -185,17 +287,19 @@ class MergerPercentage(BaseFeedConfigModel):
     shuffle: bool
     items: List[MergerPercentageItem]
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
-        Метод для получения данных в процентном соотношении из данных субфидов.
+        Метод для получения данных в процентном соотношении из данных позиций.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: для метода класса.
@@ -203,20 +307,27 @@ class MergerPercentage(BaseFeedConfigModel):
         """
 
         # Формируем результат процентного мерджера.
-        result = SmartFeedResult(data=[], next_page=SmartFeedResultNextPage(data={}), has_next_page=False)
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
         for item in self.items:
             # Получаем данные из позиций процентного мерджера.
-            data = item.data.get_data(
-                methods_dict=methods_dict, limit=limit * item.percentage // 100, next_page=next_page, **params
+            item_result = await item.data.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit * item.percentage // 100,
+                next_page=next_page,
+                **params,
             )
+
             # Добавляем данные позиции к общему результату процентного мерджера.
-            result.data.extend(data.data)
+            result.data.extend(item_result.data)
+
             # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
-            if not result.has_next_page and data.has_next_page:
+            if not result.has_next_page and item_result.has_next_page:
                 result.has_next_page = True
+
             # Обновляем next_page.
-            result.next_page.data.update(data.next_page.data)
+            result.next_page.data.update(item_result.next_page.data)
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:
@@ -225,26 +336,192 @@ class MergerPercentage(BaseFeedConfigModel):
         return result
 
 
+class MergerPercentageGradient(BaseFeedConfigModel):
+    """
+    Модель процентного мерджера с градиентном.
+
+    Attributes:
+        merger_id       уникальный ID мерджера.
+        type            тип объекта - всегда "merger_percentage_gradient".
+        item_from       мерджер / субфид из которого начинается "перетекание" градиента.
+        item_to         мерджер / субфид в который "перетекает" градиент.
+        step            изменение в % соотношения из item_from в item_to.
+        size_to_step    шаг для применения изменений % соотношения (например, через каждые 30 позиций).
+        shuffle         флаг для перемешивания полученных данных мерджера.
+    """
+
+    merger_id: str
+    type: Literal["merger_percentage_gradient"]
+    item_from: MergerPercentageItem
+    item_to: MergerPercentageItem
+    step: int
+    size_to_step: int
+    shuffle: bool
+
+    @root_validator
+    def validate_merger_percentage_gradient(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if values["step"] < 1 or values["step"] > 100:
+            raise ValueError('"step" must be in range from 1 to 100')
+        if values["size_to_step"] < 1:
+            raise ValueError('"size_to_step" must be bigger than 1')
+        return values
+
+    async def _calculate_limits_and_percents(self, page: int, limit: int) -> List[Dict[str, int]]:
+        """
+        Метод для получения списка лимитов данных с процентным соотношением позиций item_from & item_to,
+        учитывая градиентное изменение соотношений.
+
+        :param page: порядковый номер страницы.
+        :param limit: общий лимит данных для страницы.
+        :return: список лимитов данных с процентным соотношением позиций item_from & item_to.
+        """
+
+        result: List = []
+
+        percentage_from = self.item_from.percentage
+        percentage_to = self.item_to.percentage
+        start_position = limit * (page - 1)
+        first_iter = True
+
+        for i in range(self.size_to_step, limit * page + self.size_to_step, self.size_to_step):
+            # При первой итерации и percentage_to >= 100 не меняем соотношение % между позициями.
+            if not first_iter and percentage_to < 100:
+                # Меняем процентное соотношение позиций на "шаг", указанный в конфигурации.
+                percentage_from -= self.step
+                percentage_to += self.step
+
+                # Если процентное соотношение вышло за 100+, то устанавливаем предельные значения.
+                if percentage_to > 100 or percentage_from < 0:
+                    percentage_from = 0
+                    percentage_to = 100
+
+            # Если индекс итерации по величине больше стартовой позиции согласно переданной странице,
+            # то начинаем обработку.
+            if i > start_position:
+                # Рассчитываем лимит получения данных для конкретной итерации.
+                iter_limit = (limit * page - start_position) if i > limit * page else (i - start_position)
+                start_position = i
+
+                # Формируем результат для каждой итерации и добавляем в возвращаемый список, но если процентное
+                # соотношение у последней итерации 0 - 100, то добавляем лимит к ней.
+                if result and result[-1]["to"] >= 100:
+                    result[-1]["limit"] += iter_limit
+                else:
+                    iter_result = {"limit": iter_limit, "from": percentage_from, "to": percentage_to}
+                    result.append(iter_result)
+
+            # Если первая итерация цикла
+            if first_iter:
+                first_iter = False
+
+        return result
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных в процентном соотношении с градиентом из данных позиций.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param params: для метода класса.
+        :return: список данных в процентном соотношении.
+        """
+
+        # Формируем результат процентного мерджера с градиентом.
+        result = FeedResult(
+            data=[],
+            next_page=FeedResultNextPage(
+                data={
+                    self.merger_id: FeedResultNextPageInside(
+                        page=next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1,
+                        after=next_page.data[self.merger_id].after if self.merger_id in next_page.data else None,
+                    )
+                },
+            ),
+            has_next_page=False,
+        )
+
+        # Получаем список лимитов данных и соотношений согласно странице и градиенту.
+        limits_and_percent = await self._calculate_limits_and_percents(
+            page=result.next_page.data[self.merger_id].page,
+            limit=limit,
+        )
+
+        for index, lp_data in enumerate(limits_and_percent):
+            # Высчитываем лимиты для каждой позиции исходя из процентного соотношения.
+            limit_from = lp_data["limit"] * lp_data["from"] // 100
+            limit_to = lp_data["limit"] * lp_data["to"] // 100
+
+            # При первой итерации используем next_page из запроса, при последующих из текущего мерджера.
+            lp_next_page = next_page if index == 0 else result.next_page
+
+            # Получаем данные из позиций в процентном соотношений.
+            item_from = await self.item_from.data.get_data(
+                methods_dict=methods_dict, user_id=user_id, limit=limit_from, next_page=lp_next_page, **params
+            )
+            item_to = await self.item_to.data.get_data(
+                methods_dict=methods_dict, user_id=user_id, limit=limit_to, next_page=lp_next_page, **params
+            )
+
+            # Добавляем данные позиции к общему результату процентного мерджера с градиентом.
+            result.data.extend(item_from.data)
+            result.data.extend(item_to.data)
+
+            # Обновляем next_page.
+            result.next_page.data.update(item_from.next_page.data)
+            result.next_page.data.update(item_to.next_page.data)
+
+            # При последней итерации обновляем параметр has_next_page.
+            if index == len(limits_and_percent) - 1:
+                # Если has_next_page = False, то проверяем has_next_page у позиций и, если необходимо, обновляем.
+                if any([item_from.has_next_page, item_to.has_next_page]):
+                    result.has_next_page = True
+
+        # Если в конфигурации указано "смешать" данные.
+        if self.shuffle:
+            shuffle(result.data)
+
+        # Обновляем страницу для курсора пагинации мерджера.
+        result.next_page.data[self.merger_id].page += 1
+
+        return result
+
+
 class SubFeed(BaseFeedConfigModel):
     """
     Модель субфида.
+
+    Attributes:
+        subfeed_id      уникальный ID субфида.
+        type            тип объекта - всегда "subfeed".
+        method_name     название клиентского метода для получения данных субфида.
     """
 
     subfeed_id: str
     type: Literal["subfeed"]
     method_name: str
 
-    def get_data(
+    async def get_data(
         self,
         methods_dict: Dict[str, Callable],
+        user_id: Any,
         limit: int,
-        next_page: SmartFeedResultNextPage,
+        next_page: FeedResultNextPage,
         **params: Any,
-    ) -> SmartFeedResult:
+    ) -> FeedResult:
         """
-        Метод для получения данных.
+        Метод для получения данных из метода субфида.
 
         :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param params: параметры для метода.
@@ -252,9 +529,9 @@ class SubFeed(BaseFeedConfigModel):
         """
 
         # Формируем next_page конкретного субфида.
-        subfeed_next_page = SmartFeedResultNextPage(
+        subfeed_next_page = FeedResultNextPage(
             data={
-                self.subfeed_id: SmartFeedResultNextPageInside(
+                self.subfeed_id: FeedResultNextPageInside(
                     page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
                     after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
                 )
@@ -262,10 +539,10 @@ class SubFeed(BaseFeedConfigModel):
         )
 
         # Получаем результат функции клиента в формате SubFeedResult.
-        result = methods_dict[self.method_name](
-            subfeed_id=self.subfeed_id, limit=limit, next_page=subfeed_next_page, **params
+        result = await methods_dict[self.method_name](
+            subfeed_id=self.subfeed_id, user_id=user_id, limit=limit, next_page=subfeed_next_page, **params
         )
-        if not isinstance(result, SmartFeedResult):
+        if not isinstance(result, FeedResult):
             raise TypeError(
                 'SubFeed function must return "SubFeedResult" instance (from smartfeed.schemas import SubFeedResult).'
             )
@@ -276,9 +553,19 @@ class SubFeed(BaseFeedConfigModel):
 class FeedConfig(BaseModel):
     """
     Модель конфигурации фида.
+
+    Attributes:
+        version             версия конфигурации.
+        view_session        флаг использования механизма расчета всего фида сразу и сохранения в кэш.
+        session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
+        session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
+        feed                мерджер или субфид.
     """
 
     version: str
+    view_session: bool
+    session_size: int
+    session_live_time: int
     feed: FeedTypes
 
 
@@ -287,3 +574,4 @@ MergerPositional.update_forward_refs()
 MergerPercentage.update_forward_refs()
 SubFeed.update_forward_refs()
 MergerPercentageItem.update_forward_refs()
+MergerAppend.update_forward_refs()

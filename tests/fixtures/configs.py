@@ -1,11 +1,14 @@
 EXAMPLE_CLIENT_FEED = {
     "version": "1",
+    "view_session": True,
+    "session_size": 800,
+    "session_live_time": 300,
     "feed": {
         "merger_id": "merger_pos",
         "type": "merger_positional",
-        "positions": [1, 11, 55],
-        "start": 56,
-        "end": 100,
+        "positions": [1, 3, 15],
+        "start": 17,
+        "end": 200,
         "step": 2,
         "positional": {
             "subfeed_id": "sf_positional",
@@ -37,5 +40,3 @@ EXAMPLE_CLIENT_FEED = {
         },
     },
 }
-
-EXAMPLE_CLIENT_MERGER_POSITIONAL = {}
