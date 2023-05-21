@@ -387,9 +387,7 @@ class TestExampleClientConfig:
             {"limit": 30, "from": 22, "to": 78},
             {"limit": 30, "from": 14, "to": 86},
             {"limit": 30, "from": 6, "to": 94},
-            {"limit": 30, "from": 0, "to": 100},
-            {"limit": 30, "from": 0, "to": 100},
-            {"limit": 16, "from": 0, "to": 100},
+            {"limit": 76, "from": 0, "to": 100},
         ]
         mp_gradient_1_limits_and_percents_data = await mp_gradient_1._calculate_limits_and_percents(page=2, limit=173)
 
@@ -412,8 +410,30 @@ class TestExampleClientConfig:
         ]
         mp_gradient_2_limits_and_percents_data = await mp_gradient_2._calculate_limits_and_percents(page=4, limit=199)
 
+        mp_gradient_3 = MergerPercentageGradient(
+            merger_id="ec_merger_percentage_gradient",
+            type="merger_percentage_gradient",
+            item_from=item_1,
+            item_to=item_2,
+            step=10,
+            size_to_step=30,
+            shuffle=False,
+        )
+        mp_gradient_3_limits_and_percents_ans = [
+            {"limit": 30, "from": 70, "to": 30},
+            {"limit": 30, "from": 60, "to": 40},
+            {"limit": 30, "from": 50, "to": 50},
+            {"limit": 30, "from": 40, "to": 60},
+            {"limit": 30, "from": 30, "to": 70},
+            {"limit": 30, "from": 20, "to": 80},
+            {"limit": 30, "from": 10, "to": 90},
+            {"limit": 590, "from": 0, "to": 100},
+        ]
+        mp_gradient_3_limits_and_percents_data = await mp_gradient_3._calculate_limits_and_percents(page=1, limit=800)
+
         assert mp_gradient_1_limits_and_percents_data == mp_gradient_1_limits_and_percents_ans
         assert mp_gradient_2_limits_and_percents_data == mp_gradient_2_limits_and_percents_ans
+        assert mp_gradient_3_limits_and_percents_data == mp_gradient_3_limits_and_percents_ans
 
     @pytest.mark.asyncio
     async def test_merger_percentage_gradient_get_data(self) -> None:

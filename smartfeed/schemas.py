@@ -402,9 +402,13 @@ class MergerPercentageGradient(BaseFeedConfigModel):
                 iter_limit = (limit * page - start_position) if i > limit * page else (i - start_position)
                 start_position = i
 
-                # Формируем результат для каждой итерации и добавляем в возвращаемый список.
-                iter_result = {"limit": iter_limit, "from": percentage_from, "to": percentage_to}
-                result.append(iter_result)
+                # Формируем результат для каждой итерации и добавляем в возвращаемый список, но если процентное
+                # соотношение у последней итерации 0 - 100, то добавляем лимит к ней.
+                if result and result[-1]["to"] >= 100:
+                    result[-1]["limit"] += iter_limit
+                else:
+                    iter_result = {"limit": iter_limit, "from": percentage_from, "to": percentage_to}
+                    result.append(iter_result)
 
             # Если первая итерация цикла
             if first_iter:
