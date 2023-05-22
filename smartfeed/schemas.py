@@ -287,6 +287,43 @@ class MergerPercentage(BaseFeedConfigModel):
     shuffle: bool
     items: List[MergerPercentageItem]
 
+    @staticmethod
+    async def _merge_items_data(items_data: List[List]) -> List:
+        """
+        Метод для получения максимально равномерно распределенных данных позиций процентного мерджера.
+
+        :param items_data: список со списками данных из каждой позиции.
+        :return: максимально равномерно распределенные данные позиций процентного мерджера.
+        """
+
+        # Формируем возвращаемый результат и список курсоров для списка каждой позиции.
+        result: List = []
+        cursor: List[Dict] = []
+
+        # Получаем длину самого маленького списка и формируем курсор для каждого списка.
+        min_length = min(len(item_data) for item_data in items_data) or 1
+        for item_data in items_data:
+            cursor.append(
+                {
+                    "items": item_data,
+                    "current": 0,
+                    "size": round(len(item_data) / min_length),
+                }
+            )
+
+        # Получаем общий размер всех элементов всех списков и пока не получаем результат такого же размера
+        # производим операции по распределению элементов.
+        full_length = sum(len(item_data) for item_data in items_data)
+        while len(result) < full_length:
+            for item_cursor in cursor:
+                items = item_cursor["items"]
+                start = item_cursor["current"]
+                end = start + item_cursor["size"] if start + item_cursor["size"] < len(items) else len(items)
+                result.extend(items[start:end])
+                item_cursor["current"] = end
+
+        return result
+
     async def get_data(
         self,
         methods_dict: Dict[str, Callable],
@@ -309,6 +346,7 @@ class MergerPercentage(BaseFeedConfigModel):
         # Формируем результат процентного мерджера.
         result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
+        items_data: List = []
         for item in self.items:
             # Получаем данные из позиций процентного мерджера.
             item_result = await item.data.get_data(
@@ -319,8 +357,8 @@ class MergerPercentage(BaseFeedConfigModel):
                 **params,
             )
 
-            # Добавляем данные позиции к общему результату процентного мерджера.
-            result.data.extend(item_result.data)
+            # Добавляем данные позиции в список данных позиций.
+            items_data.append(item_result.data)
 
             # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
             if not result.has_next_page and item_result.has_next_page:
@@ -328,6 +366,9 @@ class MergerPercentage(BaseFeedConfigModel):
 
             # Обновляем next_page.
             result.next_page.data.update(item_result.next_page.data)
+
+        # Добавляем данные позиции к общему результату процентного мерджера.
+        result.data = await self._merge_items_data(items_data=items_data)
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:
