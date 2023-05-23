@@ -407,7 +407,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             raise ValueError('"size_to_step" must be bigger than 1')
         return values
 
-    async def _calculate_limits_and_percents(self, page: int, limit: int) -> List[Dict[str, int]]:
+    async def _calculate_limits_and_percents(self, page: int, limit: int) -> Dict:
         """
         Метод для получения списка лимитов данных с процентным соотношением позиций item_from & item_to,
         учитывая градиентное изменение соотношений.
@@ -417,7 +417,11 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         :return: список лимитов данных с процентным соотношением позиций item_from & item_to.
         """
 
-        result: List = []
+        result: Dict = {
+            "limit_from": 0,
+            "limit_to": 0,
+            "percentages": [],
+        }
 
         percentage_from = self.item_from.percentage
         percentage_to = self.item_to.percentage
@@ -445,11 +449,14 @@ class MergerPercentageGradient(BaseFeedConfigModel):
 
                 # Формируем результат для каждой итерации и добавляем в возвращаемый список, но если процентное
                 # соотношение у последней итерации 0 - 100, то добавляем лимит к ней.
-                if result and result[-1]["to"] >= 100:
-                    result[-1]["limit"] += iter_limit
+                if result["percentages"] and result["percentages"][-1]["to"] >= 100:
+                    result["limit_to"] += iter_limit
+                    result["percentages"][-1]["limit"] += iter_limit
                 else:
+                    result["limit_from"] += iter_limit * percentage_from // 100
+                    result["limit_to"] += iter_limit * percentage_to // 100
                     iter_result = {"limit": iter_limit, "from": percentage_from, "to": percentage_to}
-                    result.append(iter_result)
+                    result["percentages"].append(iter_result)
 
             # Если первая итерация цикла
             if first_iter:
@@ -491,40 +498,45 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         )
 
         # Получаем список лимитов данных и соотношений согласно странице и градиенту.
-        limits_and_percent = await self._calculate_limits_and_percents(
+        limits_and_percents = await self._calculate_limits_and_percents(
             page=result.next_page.data[self.merger_id].page,
             limit=limit,
         )
 
-        for index, lp_data in enumerate(limits_and_percent):
+        # Получаем данные из позиций в процентном соотношений.
+        item_from = await self.item_from.data.get_data(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=limits_and_percents["limit_from"],
+            next_page=next_page,
+            **params,
+        )
+        item_to = await self.item_to.data.get_data(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=limits_and_percents["limit_to"],
+            next_page=next_page,
+            **params,
+        )
+
+        from_start_index = 0
+        to_start_index = 0
+        for lp_data in limits_and_percents["percentages"]:
             # Высчитываем лимиты для каждой позиции исходя из процентного соотношения.
-            limit_from = lp_data["limit"] * lp_data["from"] // 100
-            limit_to = lp_data["limit"] * lp_data["to"] // 100
-
-            # При первой итерации используем next_page из запроса, при последующих из текущего мерджера.
-            lp_next_page = next_page if index == 0 else result.next_page
-
-            # Получаем данные из позиций в процентном соотношений.
-            item_from = await self.item_from.data.get_data(
-                methods_dict=methods_dict, user_id=user_id, limit=limit_from, next_page=lp_next_page, **params
-            )
-            item_to = await self.item_to.data.get_data(
-                methods_dict=methods_dict, user_id=user_id, limit=limit_to, next_page=lp_next_page, **params
-            )
+            from_end_index = (lp_data["limit"] * lp_data["from"] // 100) + from_start_index
+            to_end_index = (lp_data["limit"] * lp_data["to"] // 100) + to_start_index
 
             # Добавляем данные позиции к общему результату процентного мерджера с градиентом.
-            result.data.extend(item_from.data)
-            result.data.extend(item_to.data)
+            result.data.extend(item_from.data[from_start_index:from_end_index])
+            result.data.extend(item_to.data[to_start_index:to_end_index])
 
-            # Обновляем next_page.
-            result.next_page.data.update(item_from.next_page.data)
-            result.next_page.data.update(item_to.next_page.data)
+        # Обновляем next_page.
+        result.next_page.data.update(item_from.next_page.data)
+        result.next_page.data.update(item_to.next_page.data)
 
-            # При последней итерации обновляем параметр has_next_page.
-            if index == len(limits_and_percent) - 1:
-                # Если has_next_page = False, то проверяем has_next_page у позиций и, если необходимо, обновляем.
-                if any([item_from.has_next_page, item_to.has_next_page]):
-                    result.has_next_page = True
+        # Если has_next_page = False, то проверяем has_next_page у позиций и, если необходимо, обновляем.
+        if any([item_from.has_next_page, item_to.has_next_page]):
+            result.has_next_page = True
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:

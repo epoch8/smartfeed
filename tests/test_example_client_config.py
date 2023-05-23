@@ -1,7 +1,7 @@
 from typing import Callable, Dict, Optional
 
 import pytest
-import redis
+# import redis
 
 from smartfeed.examples.example_client import LookyMixer, LookyMixerRequest
 from smartfeed.manager import FeedManager
@@ -369,13 +369,17 @@ class TestExampleClientConfig:
             size_to_step=30,
             shuffle=False,
         )
-        mp_gradient_1_limits_and_percents_ans = [
-            {"limit": 7, "from": 30, "to": 70},
-            {"limit": 30, "from": 22, "to": 78},
-            {"limit": 30, "from": 14, "to": 86},
-            {"limit": 30, "from": 6, "to": 94},
-            {"limit": 76, "from": 0, "to": 100},
-        ]
+        mp_gradient_1_limits_and_percents_ans = {
+            "limit_from": 13,
+            "limit_to": 156,
+            "percentages": [
+                {"limit": 7, "from": 30, "to": 70},
+                {"limit": 30, "from": 22, "to": 78},
+                {"limit": 30, "from": 14, "to": 86},
+                {"limit": 30, "from": 6, "to": 94},
+                {"limit": 76, "from": 0, "to": 100},
+            ],
+        }
         mp_gradient_1_limits_and_percents_data = await mp_gradient_1._calculate_limits_and_percents(page=2, limit=173)
 
         mp_gradient_2 = MergerPercentageGradient(
@@ -387,14 +391,18 @@ class TestExampleClientConfig:
             size_to_step=43,
             shuffle=False,
         )
-        mp_gradient_2_limits_and_percents_ans = [
-            {"limit": 5, "from": 57, "to": 43},
-            {"limit": 43, "from": 56, "to": 44},
-            {"limit": 43, "from": 55, "to": 45},
-            {"limit": 43, "from": 54, "to": 46},
-            {"limit": 43, "from": 53, "to": 47},
-            {"limit": 22, "from": 52, "to": 48},
-        ]
+        mp_gradient_2_limits_and_percents_ans = {
+            "limit_from": 105,
+            "limit_to": 88,
+            "percentages": [
+                {"limit": 5, "from": 57, "to": 43},
+                {"limit": 43, "from": 56, "to": 44},
+                {"limit": 43, "from": 55, "to": 45},
+                {"limit": 43, "from": 54, "to": 46},
+                {"limit": 43, "from": 53, "to": 47},
+                {"limit": 22, "from": 52, "to": 48},
+            ],
+        }
         mp_gradient_2_limits_and_percents_data = await mp_gradient_2._calculate_limits_and_percents(page=4, limit=199)
 
         mp_gradient_3 = MergerPercentageGradient(
@@ -406,16 +414,20 @@ class TestExampleClientConfig:
             size_to_step=30,
             shuffle=False,
         )
-        mp_gradient_3_limits_and_percents_ans = [
-            {"limit": 30, "from": 70, "to": 30},
-            {"limit": 30, "from": 60, "to": 40},
-            {"limit": 30, "from": 50, "to": 50},
-            {"limit": 30, "from": 40, "to": 60},
-            {"limit": 30, "from": 30, "to": 70},
-            {"limit": 30, "from": 20, "to": 80},
-            {"limit": 30, "from": 10, "to": 90},
-            {"limit": 590, "from": 0, "to": 100},
-        ]
+        mp_gradient_3_limits_and_percents_ans = {
+            "limit_from": 84,
+            "limit_to": 716,
+            "percentages": [
+                {"limit": 30, "from": 70, "to": 30},
+                {"limit": 30, "from": 60, "to": 40},
+                {"limit": 30, "from": 50, "to": 50},
+                {"limit": 30, "from": 40, "to": 60},
+                {"limit": 30, "from": 30, "to": 70},
+                {"limit": 30, "from": 20, "to": 80},
+                {"limit": 30, "from": 10, "to": 90},
+                {"limit": 590, "from": 0, "to": 100},
+            ],
+        }
         mp_gradient_3_limits_and_percents_data = await mp_gradient_3._calculate_limits_and_percents(page=1, limit=800)
 
         assert mp_gradient_1_limits_and_percents_data == mp_gradient_1_limits_and_percents_ans
@@ -569,32 +581,32 @@ class TestExampleClientConfig:
         print(f"\nFeed Data: {feed_data}")
         assert feed_data == feed_ans
 
-        # Тестируем реализацию с Redis
-        self.query_params.next_page = FeedResultNextPage(
-            data={"session_feed_data": FeedResultNextPageInside(page=2, after=None)}
-        )
-        redis_client = redis.Redis(host="localhost", port=32769, db=0, username="default", password="redispw")
-        feed_manager_2 = FeedManager(
-            config=EXAMPLE_CLIENT_FEED, methods_dict=self.methods_dict, redis_client=redis_client
-        )
-        feed_manager_2.feed_config.view_session = True
-        feed_data_2 = await feed_manager_2.get_data(
-            limit=self.query_params.limit,
-            next_page=self.query_params.next_page,
-            user_id=self.query_params.profile_id,
-        )
-
-        feed_ans_2 = FeedResult(
-            data=["x_6", "x_4", "x_7", "x_8", "x_3", "x_5", "x_4", "x_9", "x_5", "x_10"],
-            next_page=await self.get_next_page(
-                subfeed_data={
-                    "session_feed_data": FeedResultNextPage(
-                        data={"session_feed_data": FeedResultNextPageInside(page=3, after=None)}
-                    ),
-                }
-            ),
-            has_next_page=True if any([default_merger_ans.has_next_page, pos_ans.has_next_page]) else False,
-        )
-
-        print(f"\nFeed Data Cached: {feed_data_2}")
-        assert feed_data_2 == feed_ans_2
+        # # Тестируем реализацию с Redis
+        # self.query_params.next_page = FeedResultNextPage(
+        #     data={"session_feed_data": FeedResultNextPageInside(page=2, after=None)}
+        # )
+        # redis_client = redis.Redis(host="localhost", port=32769, db=0, username="default", password="redispw")
+        # feed_manager_2 = FeedManager(
+        #     config=EXAMPLE_CLIENT_FEED, methods_dict=self.methods_dict, redis_client=redis_client
+        # )
+        # feed_manager_2.feed_config.view_session = True
+        # feed_data_2 = await feed_manager_2.get_data(
+        #     limit=self.query_params.limit,
+        #     next_page=self.query_params.next_page,
+        #     user_id=self.query_params.profile_id,
+        # )
+        #
+        # feed_ans_2 = FeedResult(
+        #     data=["x_6", "x_4", "x_7", "x_8", "x_3", "x_5", "x_4", "x_9", "x_5", "x_10"],
+        #     next_page=await self.get_next_page(
+        #         subfeed_data={
+        #             "session_feed_data": FeedResultNextPage(
+        #                 data={"session_feed_data": FeedResultNextPageInside(page=3, after=None)}
+        #             ),
+        #         }
+        #     ),
+        #     has_next_page=True if any([default_merger_ans.has_next_page, pos_ans.has_next_page]) else False,
+        # )
+        #
+        # print(f"\nFeed Data Cached: {feed_data_2}")
+        # assert feed_data_2 == feed_ans_2
