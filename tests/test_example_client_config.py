@@ -1,7 +1,6 @@
 from typing import Callable, Dict, Optional
 
 import pytest
-# import redis
 
 from smartfeed.examples.example_client import LookyMixer, LookyMixerRequest
 from smartfeed.manager import FeedManager
@@ -18,6 +17,9 @@ from smartfeed.schemas import (
     SubFeed,
 )
 from tests.fixtures.configs import EXAMPLE_CLIENT_FEED
+
+# import redis
+
 
 
 class TestExampleClientConfig:

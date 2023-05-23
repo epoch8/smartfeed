@@ -617,8 +617,8 @@ class FeedConfig(BaseModel):
 
     version: str
     view_session: bool
-    session_size: int
-    session_live_time: int
+    session_size: int = 100
+    session_live_time: int = 300
     feed: FeedTypes
 
 
