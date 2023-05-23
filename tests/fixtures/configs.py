@@ -1,6 +1,6 @@
 EXAMPLE_CLIENT_FEED = {
     "version": "1",
-    "view_session": True,
+    "view_session": False,
     "session_size": 800,
     "session_live_time": 300,
     "feed": {
