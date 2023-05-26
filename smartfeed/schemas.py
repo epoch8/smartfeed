@@ -1,6 +1,6 @@
+import inspect
 from abc import ABC, abstractmethod
 from random import shuffle
-import inspect
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, root_validator
@@ -51,6 +51,21 @@ class FeedResult(BaseModel):
 
     data: List
     next_page: FeedResultNextPage
+    has_next_page: bool
+
+
+class FeedResultClient(BaseModel):
+    """
+    Модель результата клиентского метода субфида.
+
+    Attributes:
+        data                список данных, возвращенных мерджером / субфидом.
+        next_page           курсор пагинации клиентского метода.
+        has_next_page       флаг наличия следующей страницы данных.
+    """
+
+    data: List
+    next_page: FeedResultNextPageInside
     has_next_page: bool
 
 
@@ -585,13 +600,9 @@ class SubFeed(BaseFeedConfigModel):
         """
 
         # Формируем next_page конкретного субфида.
-        subfeed_next_page = FeedResultNextPage(
-            data={
-                self.subfeed_id: FeedResultNextPageInside(
-                    page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
-                    after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
-                )
-            }
+        subfeed_next_page = FeedResultNextPageInside(
+            page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
+            after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
         )
 
         # Формируем params для функции субфида.
@@ -602,19 +613,21 @@ class SubFeed(BaseFeedConfigModel):
                 method_params[arg] = params[arg]
 
         # Получаем результат функции клиента в формате SubFeedResult.
-        result = await methods_dict[self.method_name](
-            subfeed_id=self.subfeed_id,
+        method_result = await methods_dict[self.method_name](
             user_id=user_id,
             limit=limit,
             next_page=subfeed_next_page,
             **method_params,
             **self.subfeed_params,
         )
-        if not isinstance(result, FeedResult):
-            raise TypeError(
-                'SubFeed function must return "SubFeedResult" instance (from smartfeed.schemas import SubFeedResult).'
-            )
+        if not isinstance(method_result, FeedResultClient):
+            raise TypeError('SubFeed function must return "FeedResultClient" instance.')
 
+        result = FeedResult(
+            data=method_result.data,
+            next_page=FeedResultNextPage(data={self.subfeed_id: method_result.next_page}),
+            has_next_page=method_result.has_next_page,
+        )
         return result
 
 

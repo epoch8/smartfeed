@@ -16,7 +16,7 @@ EXAMPLE_CLIENT_FEED = {
             "method_name": "ads",
             "subfeed_params": {
                 "limit_to_return": 10,
-            }
+            },
         },
         "default": {
             "merger_id": "merger_percent",

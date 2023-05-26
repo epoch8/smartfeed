@@ -21,7 +21,6 @@ from tests.fixtures.configs import EXAMPLE_CLIENT_FEED
 # import redis
 
 
-
 class TestExampleClientConfig:
     """
     Класс тестирования конфигурации фида example_client.
@@ -75,13 +74,17 @@ class TestExampleClientConfig:
 
         next_page = await self.get_next_page(subfeed_data={subfeed_id: query_params.next_page})
         method_result = await LookyMixer().looky_method(
-            subfeed_id=subfeed_id,
             limit=query_params.limit if percentage == 0 else query_params.limit * percentage // 100,
             user_id=query_params.profile_id,
-            next_page=next_page,
+            next_page=next_page.data[subfeed_id],
             limit_to_return=limit_to_return,
         )
-        return method_result
+        result = FeedResult(
+            data=method_result.data,
+            next_page=FeedResultNextPage(data={subfeed_id: method_result.next_page}),
+            has_next_page=method_result.has_next_page,
+        )
+        return result
 
     @pytest.mark.asyncio
     async def test_parsing_sample_config(self) -> None:
