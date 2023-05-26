@@ -14,7 +14,7 @@ EXAMPLE_CLIENT_FEED = {
             "subfeed_id": "sf_positional",
             "type": "subfeed",
             "method_name": "ads",
-            "static_params": {
+            "config_params": {
                 "limit_to_return": 10,
             }
         },
