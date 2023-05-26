@@ -561,6 +561,7 @@ class SubFeed(BaseFeedConfigModel):
     subfeed_id: str
     type: Literal["subfeed"]
     method_name: str
+    config_params: Dict[str, Any] = {}
 
     async def get_data(
         self,
@@ -593,7 +594,12 @@ class SubFeed(BaseFeedConfigModel):
 
         # Получаем результат функции клиента в формате SubFeedResult.
         result = await methods_dict[self.method_name](
-            subfeed_id=self.subfeed_id, user_id=user_id, limit=limit, next_page=subfeed_next_page, **params
+            subfeed_id=self.subfeed_id,
+            user_id=user_id,
+            limit=limit,
+            next_page=subfeed_next_page,
+            **params,
+            **self.config_params,
         )
         if not isinstance(result, FeedResult):
             raise TypeError(
