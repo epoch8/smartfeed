@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from random import shuffle
+import inspect
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, root_validator
@@ -556,12 +557,13 @@ class SubFeed(BaseFeedConfigModel):
         subfeed_id      уникальный ID субфида.
         type            тип объекта - всегда "subfeed".
         method_name     название клиентского метода для получения данных субфида.
+        subfeed_params  статичные параметры для метода субфида.
     """
 
     subfeed_id: str
     type: Literal["subfeed"]
     method_name: str
-    config_params: Dict[str, Any] = {}
+    subfeed_params: Dict[str, Any] = {}
 
     async def get_data(
         self,
@@ -592,14 +594,21 @@ class SubFeed(BaseFeedConfigModel):
             }
         )
 
+        # Формируем params для функции субфида.
+        method_args = inspect.getfullargspec(methods_dict[self.method_name]).args
+        method_params: Dict[str, Any] = {}
+        for arg in method_args:
+            if arg in params:
+                method_params[arg] = params[arg]
+
         # Получаем результат функции клиента в формате SubFeedResult.
         result = await methods_dict[self.method_name](
             subfeed_id=self.subfeed_id,
             user_id=user_id,
             limit=limit,
             next_page=subfeed_next_page,
-            **params,
-            **self.config_params,
+            **method_params,
+            **self.subfeed_params,
         )
         if not isinstance(result, FeedResult):
             raise TypeError(
