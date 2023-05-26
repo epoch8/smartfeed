@@ -37,6 +37,9 @@ poetry add git+ssh://git@github.com:epoch8/looky-timeline.git
         "subfeed_id": "sf_positional",
         "type": "subfeed",
         "method_name": "ads",
+        "subfeed_params": {
+            "limit_to_return": 10,
+        },
     },
     "default": {
         "merger_id": "merger_percent",
@@ -68,11 +71,10 @@ poetry add git+ssh://git@github.com:epoch8/looky-timeline.git
 
 Клиентский метод для получения данных должен обязательно включать в себя следующие параметры:
 - **user_id: Any** - ID объекта, на который ориентируемся при получении данных субфида.
-- **subfeed_id: str** - ID использующего субфида.
 - **limit: int** - Количество возвращаемых данных.
-- **next_page: FeedResultNextPage** - Объект курсора пагинации, формируется на стороне клиента после обработки данных.
+- **next_page: FeedResultNextPageInside** - Объект курсора пагинации, формируется на стороне клиента после обработки данных.
 
-Возвращаемый тип данных: **FeedResult**.
+Возвращаемый тип данных: **FeedResultClient**.
 
 ### Запуск
 Для получения ленты с помощью SmartFeed нужно выполнить следующий код:
