@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field, root_validator
 
 FeedTypes = Annotated[
     Union[
+        "MergerAppend",
         "MergerPositional",
         "MergerPercentage",
+        "MergerPercentageGradient",
         "SubFeed",
     ],
     Field(discriminator="type"),
@@ -656,3 +658,4 @@ MergerPercentage.update_forward_refs()
 SubFeed.update_forward_refs()
 MergerPercentageItem.update_forward_refs()
 MergerAppend.update_forward_refs()
+MergerPercentageGradient.update_forward_refs()
