@@ -65,7 +65,7 @@ class FeedManager:
         :return: результат получения данных согласно конфигурации фида.
         """
 
-        if not redis_client.exists(user_id):
+        if not redis_client.exists(user_id) or not next_page.data:
             await self._set_cache(user_id=user_id, redis_client=redis_client, **params)
 
         session_data = json.loads(redis_client.get(name=user_id))  # type: ignore
