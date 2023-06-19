@@ -231,10 +231,11 @@ class MergerPositional(BaseFeedConfigModel):
                     )
                 },
             ),
-            has_next_page=False,
+            has_next_page=default_res.has_next_page,
         )
 
         # Получаем список позиций с учетом текущей страницы.
+        positional_has_next_page = True
         page_positions = []
         available_positions = range(
             (result.next_page.data[self.merger_id].page - 1) * limit,
@@ -244,7 +245,14 @@ class MergerPositional(BaseFeedConfigModel):
             if position in available_positions:
                 page_positions.append(available_positions.index(position))
 
+        # Если конечная позиция текущей страницы больше или равна MAX позиции в конфигурации, то has_next_page = False
+        if max(available_positions) >= max(self.positions, default=0):
+            positional_has_next_page = False
+
         if self.start is not None and self.end is not None and self.step is not None:
+            # Если конечная позиция текущей страницы больше или равна конечной шаговой позиции, то has_next_page = False
+            positional_has_next_page = not max(available_positions) >= self.end
+
             for position in range(self.start, self.end, self.step):
                 if position in available_positions:
                     page_positions.append(available_positions.index(position))
@@ -255,7 +263,7 @@ class MergerPositional(BaseFeedConfigModel):
         )
 
         # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
-        if not result.has_next_page and any([default_res.has_next_page, pos_res.has_next_page]):
+        if not result.has_next_page and all([positional_has_next_page, pos_res.has_next_page]):
             result.has_next_page = True
 
         # Обновляем next_page.

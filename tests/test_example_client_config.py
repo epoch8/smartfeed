@@ -29,10 +29,12 @@ class TestExampleClientConfig:
     def setup_method(self):
         self.sub_feed = SubFeed(subfeed_id="ec_sub_feed", type="subfeed", method_name="ads")
         self.sub_feed_2 = SubFeed(subfeed_id="ec_sub_feed_2", type="subfeed", method_name="ads")
+        self.sub_feed_3 = SubFeed(subfeed_id="ec_sub_feed_3", type="subfeed", method_name="empty")
         self.query_params = LookyMixerRequest(profile_id="x", limit=10)
         self.methods_dict: Dict[str, Callable] = {
             "ads": LookyMixer().looky_method,
             "followings": LookyMixer().looky_method,
+            "empty": LookyMixer().empty_method,
         }
 
     @staticmethod
@@ -61,6 +63,7 @@ class TestExampleClientConfig:
         query_params: LookyMixerRequest,
         percentage: int = 0,
         limit_to_return: Optional[int] = None,
+        method: Optional[Callable] = LookyMixer().looky_method,
     ) -> FeedResult:
         """
         Метод для получения данных метода example_client.
@@ -69,11 +72,12 @@ class TestExampleClientConfig:
         :param query_params: входные параметры.
         :param percentage: процентное соотношение (если 0, то не учитываем)
         :param limit_to_return: ограничить количество результата.
+        :param method: вызываемый метод
         :return: SmartFeedResult.
         """
 
         next_page = await self.get_next_page(subfeed_data={subfeed_id: query_params.next_page})
-        method_result = await LookyMixer().looky_method(
+        method_result = await method(
             limit=query_params.limit if percentage == 0 else query_params.limit * percentage // 100,
             user_id=query_params.profile_id,
             next_page=next_page.data[subfeed_id],
@@ -301,6 +305,68 @@ class TestExampleClientConfig:
 
         assert mp_with_positions_data == mp_with_positions_ans
         assert mp_with_step_data == mp_with_step_ans
+        assert mp_both_data == mp_both_ans
+
+    @pytest.mark.asyncio
+    async def test_merger_positional_with_no_default_get_data(self) -> None:
+        """
+        Тест для проверки получения данных позиционного мерджера.
+        """
+
+        self.query_params.next_page = FeedResultNextPage(
+            data={
+                "ec_sub_feed": FeedResultNextPageInside(page=3, after="x_20"),
+                "ec_merger_positional": FeedResultNextPageInside(page=2, after=None),
+            }
+        )
+
+        mp_both = MergerPositional(
+            merger_id="ec_merger_positional",
+            type="merger_positional",
+            positions=[1, 3],
+            start=11,
+            end=15,
+            step=2,
+            positional=self.sub_feed,
+            default=self.sub_feed_3,
+        )
+
+        # Формируем "правильные ответы".
+        default_ans = await self.get_example_client_method_result(
+            subfeed_id=self.sub_feed_3.subfeed_id,
+            query_params=self.query_params,
+            method=LookyMixer().empty_method,
+        )
+        positional_ans = await self.get_example_client_method_result(
+            subfeed_id=self.sub_feed.subfeed_id,
+            query_params=self.query_params,
+        )
+
+        positional_ans.next_page.data[self.sub_feed.subfeed_id].after = "x_22"
+        mp_both_ans = FeedResult(
+            data=["x_21", "x_22"],
+            next_page=await self.get_next_page(
+                subfeed_data={
+                    self.sub_feed.subfeed_id: positional_ans.next_page,
+                    self.sub_feed_3.subfeed_id: default_ans.next_page,
+                    mp_both.merger_id: FeedResultNextPage(
+                        data={mp_both.merger_id: FeedResultNextPageInside(page=3, after=None)}
+                    ),
+                }
+            ),
+            has_next_page=False,
+        )
+
+        # Получаем данные из мерджера.
+        mp_both_data = await mp_both.get_data(
+            methods_dict=self.methods_dict,
+            limit=self.query_params.limit,
+            next_page=self.query_params.next_page,
+            user_id=self.query_params.profile_id,
+        )
+
+        print(f"\nMerger Positional with Positions & Step Data: {mp_both_data}")
+
         assert mp_both_data == mp_both_ans
 
     @pytest.mark.asyncio
