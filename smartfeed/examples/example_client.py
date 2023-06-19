@@ -65,3 +65,26 @@ class LookyMixer:
 
         result = FeedResultClient(data=result_data, next_page=next_page, has_next_page=True)
         return result
+
+    @staticmethod
+    async def empty_method(
+        user_id: str,  # pylint: disable=W0613
+        limit: int,  # pylint: disable=W0613
+        next_page: FeedResultNextPageInside,
+        limit_to_return: Optional[int] = None,  # pylint: disable=W0613
+    ) -> FeedResultClient:
+        """
+        Пример клиентского метода, возвращающего пустые данные.
+
+        :param user_id: ID профиля.
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param limit_to_return: ограничить кол-во результата.
+        :return: массив букв "profile_id" в количестве "limit" штук.
+        """
+
+        next_page.after = None
+        next_page.page += 1
+
+        result = FeedResultClient(data=[], next_page=next_page, has_next_page=False)
+        return result
