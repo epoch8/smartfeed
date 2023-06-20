@@ -556,6 +556,10 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             result.data.extend(item_from.data[from_start_index:from_end_index])
             result.data.extend(item_to.data[to_start_index:to_end_index])
 
+            # Обновляем стартовые индексы.
+            from_start_index = from_end_index
+            to_start_index = to_end_index
+
         # Обновляем next_page.
         result.next_page.data.update(item_from.next_page.data)
         result.next_page.data.update(item_to.next_page.data)
