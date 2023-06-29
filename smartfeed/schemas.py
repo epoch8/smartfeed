@@ -1,8 +1,10 @@
 import inspect
+import json
 from abc import ABC, abstractmethod
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
+import redis
 from pydantic import BaseModel, Field, root_validator
 
 FeedTypes = Annotated[
@@ -11,6 +13,7 @@ FeedTypes = Annotated[
         "MergerPositional",
         "MergerPercentage",
         "MergerPercentageGradient",
+        "MergerViewSession",
         "SubFeed",
     ],
     Field(discriminator="type"),
@@ -83,6 +86,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -92,9 +96,136 @@ class BaseFeedConfigModel(ABC, BaseModel):
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
         :param params: параметры для метода.
         :return: список данных.
         """
+
+
+class MergerViewSession(BaseFeedConfigModel):
+    """
+    Модель мерджера с кэшированием.
+
+    Attributes:
+        merger_id           уникальный ID мерджера.
+        type                тип объекта - всегда "merger_view_session".
+        view_session        флаг использования механизма расчета всего фида сразу и сохранения в кэш.
+        session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
+        session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
+        data                мерджер или субфид.
+    """
+
+    merger_id: str
+    type: Literal["merger_view_session"]
+    session_size: int
+    session_live_time: int
+    data: FeedTypes
+
+    async def _set_cache(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        redis_client: redis.Redis,
+        cache_key: str,
+        **params: Any,
+    ) -> None:
+        """
+        Метод для кэширования данных Merger View Session.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param redis_client: объект клиента Redis.
+        :param cache_key: ключ для кэширования.
+        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
+        :return: None.
+        """
+
+        result = await self.data.get_data(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=self.session_size,
+            next_page=FeedResultNextPage(data={}),
+            **params,
+        )
+        redis_client.set(name=cache_key, value=json.dumps(result.data), ex=self.session_live_time)
+
+    async def _get_cache(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: redis.Redis,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных Merger View Session из кэша Redis.
+        При отсутствии данных в кэше - получить и сохранить.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: лимит на выдачу данных.
+        :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
+        :param redis_client: объект клиента Redis.
+        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
+        :return: результат получения данных согласно конфигурации фида.
+        """
+
+        # Формируем ключ для кэширования данных мерджера.
+        cache_key = f"{self.merger_id}_{user_id}"
+
+        # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
+        if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
+            await self._set_cache(
+                methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+            )
+
+        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
+        session_data = json.loads(redis_client.get(name=cache_key))  # type: ignore
+        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+        result = FeedResult(
+            data=session_data[(page - 1) * limit :][:limit],
+            next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
+            has_next_page=bool(len(session_data) > limit * page),
+        )
+        return result
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных методом append.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
+        :param params: для метода класса.
+        :return: список данных методом append.
+        """
+
+        # Проверяем наличие клиента Redis в конфигурации фида.
+        if not redis_client:
+            raise ValueError("Redis client must be provided if using Merger View Session")
+
+        # Формируем результат view session мерджера.
+        result = await self._get_cache(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=limit,
+            next_page=next_page,
+            redis_client=redis_client,
+            **params,
+        )
+
+        return result
 
 
 class MergerAppend(BaseFeedConfigModel):
@@ -117,6 +248,7 @@ class MergerAppend(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -126,6 +258,7 @@ class MergerAppend(BaseFeedConfigModel):
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
         :param params: для метода класса.
         :return: список данных методом append.
         """
@@ -137,7 +270,12 @@ class MergerAppend(BaseFeedConfigModel):
         for item in self.items:
             # Получаем данные из позиции мерджера.
             item_result = await item.get_data(
-                methods_dict=methods_dict, user_id=user_id, limit=result_limit, next_page=next_page, **params
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=result_limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                **params,
             )
 
             # Добавляем данные позиции к общему результату процентного мерджера.
@@ -202,6 +340,7 @@ class MergerPositional(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -211,13 +350,19 @@ class MergerPositional(BaseFeedConfigModel):
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
         :param params: для метода класса.
         :return: список данных в процентном соотношении.
         """
 
         # Получаем данные "default".
         default_res = await self.default.get_data(
-            methods_dict=methods_dict, user_id=user_id, limit=limit, next_page=next_page, **params
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=limit,
+            next_page=next_page,
+            redis_client=redis_client,
+            **params,
         )
 
         # Формируем результат позиционного мерджера.
@@ -259,7 +404,12 @@ class MergerPositional(BaseFeedConfigModel):
 
         # Получаем данные "positional".
         pos_res = await self.positional.get_data(
-            methods_dict=methods_dict, user_id=user_id, limit=len(page_positions), next_page=next_page, **params
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=len(page_positions),
+            next_page=next_page,
+            redis_client=redis_client,
+            **params,
         )
 
         # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
@@ -356,6 +506,7 @@ class MergerPercentage(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -365,6 +516,7 @@ class MergerPercentage(BaseFeedConfigModel):
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
         :param params: для метода класса.
         :return: список данных в процентном соотношении.
         """
@@ -380,6 +532,7 @@ class MergerPercentage(BaseFeedConfigModel):
                 user_id=user_id,
                 limit=limit * item.percentage // 100,
                 next_page=next_page,
+                redis_client=redis_client,
                 **params,
             )
 
@@ -496,6 +649,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -505,6 +659,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
         :param params: для метода класса.
         :return: список данных в процентном соотношении.
         """
@@ -535,6 +690,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             user_id=user_id,
             limit=limits_and_percents["limit_from"],
             next_page=next_page,
+            redis_client=redis_client,
             **params,
         )
         item_to = await self.item_to.data.get_data(
@@ -542,6 +698,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             user_id=user_id,
             limit=limits_and_percents["limit_to"],
             next_page=next_page,
+            redis_client=redis_client,
             **params,
         )
 
@@ -600,6 +757,7 @@ class SubFeed(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
+        redis_client: Optional[redis.Redis] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -609,6 +767,7 @@ class SubFeed(BaseFeedConfigModel):
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
         :param params: параметры для метода.
         :return: список данных.
         """
@@ -658,9 +817,6 @@ class FeedConfig(BaseModel):
     """
 
     version: str
-    view_session: bool
-    session_size: int = 100
-    session_live_time: int = 300
     feed: FeedTypes
 
 
@@ -671,3 +827,4 @@ SubFeed.update_forward_refs()
 MergerPercentageItem.update_forward_refs()
 MergerAppend.update_forward_refs()
 MergerPercentageGradient.update_forward_refs()
+MergerViewSession.update_forward_refs()

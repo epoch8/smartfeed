@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+    sfredis:
+      image: redis
+      container_name: sfredis
+      command: [ 'redis-server', '--port', '6379' ]
+      ports:
+        - '6379:6379'
