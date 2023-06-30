@@ -2,7 +2,7 @@ from typing import Callable, Dict
 
 import pytest
 
-from smartfeed.examples.example_client import LookyMixer
+from smartfeed.examples.example_client import ClientMixerClass
 from smartfeed.manager import FeedManager
 from smartfeed.schemas import (
     FeedConfig,
@@ -14,7 +14,7 @@ from smartfeed.schemas import (
     MergerViewSession,
     SubFeed,
 )
-from tests.fixtures.configs import PARSING_CONFIG_FIXTURE
+from tests.fixtures.configs import METHODS_DICT, PARSING_CONFIG_FIXTURE
 
 
 @pytest.mark.asyncio
@@ -23,13 +23,7 @@ async def test_parsing_config() -> None:
     Тест для проверки парсинга JSON-файла конфигурации.
     """
 
-    methods_dict: Dict[str, Callable] = {
-        "ads": LookyMixer().looky_method,
-        "followings": LookyMixer().looky_method,
-        "empty": LookyMixer().empty_method,
-    }
-
-    feed_manager = FeedManager(config=PARSING_CONFIG_FIXTURE, methods_dict=methods_dict)
+    feed_manager = FeedManager(config=PARSING_CONFIG_FIXTURE, methods_dict=METHODS_DICT)
 
     # Feed Config.
     assert isinstance(feed_manager.feed_config, FeedConfig)

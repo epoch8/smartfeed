@@ -1,11 +1,11 @@
 from typing import Callable, Dict
 
-from smartfeed.examples.example_client import LookyMixer
+from smartfeed.examples.example_client import ClientMixerClass
 
 METHODS_DICT: Dict[str, Callable] = {
-    "ads": LookyMixer().looky_method,
-    "followings": LookyMixer().looky_method,
-    "empty": LookyMixer().empty_method,
+    "ads": ClientMixerClass().example_method,
+    "followings": ClientMixerClass().example_method,
+    "empty": ClientMixerClass().empty_method,
 }
 
 PARSING_CONFIG_FIXTURE = {
