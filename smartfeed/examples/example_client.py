@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, validator
 from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside
 
 
-class LookyMixerRequest(BaseModel):
+class TestClientRequest(BaseModel):
     """
     Пример модели клиентского входящего запроса.
     """
@@ -28,13 +28,13 @@ class LookyMixerRequest(BaseModel):
         return value
 
 
-class LookyMixer:
+class ClientMixerClass:
     """
-    Пример клиентского класса LookyMixer.
+    Пример клиентского класса ClientMixer.
     """
 
     @staticmethod
-    async def looky_method(
+    async def example_method(
         user_id: str,
         limit: int,
         next_page: FeedResultNextPageInside,
