@@ -6,6 +6,7 @@ METHODS_DICT: Dict[str, Callable] = {
     "ads": ClientMixerClass().example_method,
     "followings": ClientMixerClass().example_method,
     "empty": ClientMixerClass().empty_method,
+    "error": ClientMixerClass().error_method,
 }
 
 PARSING_CONFIG_FIXTURE = {
@@ -76,6 +77,7 @@ PARSING_CONFIG_FIXTURE = {
                         "subfeed_id": "subfeed_merger_percentage_parsing_example",
                         "type": "subfeed",
                         "method_name": "followings",
+                        "raise_error": False,
                     },
                 },
             ],

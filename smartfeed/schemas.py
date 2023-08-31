@@ -750,6 +750,7 @@ class SubFeed(BaseFeedConfigModel):
     type: Literal["subfeed"]
     method_name: str
     subfeed_params: Dict[str, Any] = {}
+    raise_error: Optional[bool] = True
 
     async def get_data(
         self,
@@ -786,13 +787,24 @@ class SubFeed(BaseFeedConfigModel):
                 method_params[arg] = params[arg]
 
         # Получаем результат функции клиента в формате SubFeedResult.
-        method_result = await methods_dict[self.method_name](
-            user_id=user_id,
-            limit=limit,
-            next_page=subfeed_next_page,
-            **method_params,
-            **self.subfeed_params,
-        )
+        try:
+            method_result = await methods_dict[self.method_name](
+                user_id=user_id,
+                limit=limit,
+                next_page=subfeed_next_page,
+                **method_params,
+                **self.subfeed_params,
+            )
+        except (Exception,) as _:
+            if self.raise_error:
+                raise
+
+            method_result = FeedResultClient(
+                data=[],
+                next_page=subfeed_next_page,
+                has_next_page=False,
+            )
+
         if not isinstance(method_result, FeedResultClient):
             raise TypeError('SubFeed function must return "FeedResultClient" instance.')
 

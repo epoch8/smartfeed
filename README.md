@@ -60,6 +60,7 @@ poetry add git+ssh://git@github.com:epoch8/looky-timeline.git
                     "subfeed_id": "sf_2_default_merger_of_main",
                     "type": "subfeed",
                     "method_name": "ads",
+                    "raise_error": True or False (default = True),
                 },
             },
         ],
