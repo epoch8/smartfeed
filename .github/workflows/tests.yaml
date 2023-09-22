@@ -24,8 +24,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Setup poetry
-        run: |
-          pip install poetry==1.4.1
+        run: pip install poetry==1.4.1
 
       - name: Cache Python dependencies
         uses: actions/cache@v3
@@ -36,9 +35,7 @@ jobs:
             ${{ runner.os }}-${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          poetry install --all-extras
+        run: poetry install --all-extras
 
       - name: Lint with Pylint
-        run: |
-          make test
+        run: make test
