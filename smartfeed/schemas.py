@@ -113,6 +113,7 @@ class MergerViewSession(BaseFeedConfigModel):
         session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
         session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
         data                мерджер или субфид.
+        shuffle             флаг для перемешивания полученных данных мерджера.
     """
 
     merger_id: str
@@ -120,6 +121,7 @@ class MergerViewSession(BaseFeedConfigModel):
     session_size: int
     session_live_time: int
     data: FeedTypes
+    shuffle: bool = False
 
     async def _set_cache(
         self,
@@ -225,6 +227,10 @@ class MergerViewSession(BaseFeedConfigModel):
             **params,
         )
 
+        # Если в конфигурации указано "смешать" данные.
+        if self.shuffle:
+            shuffle(result.data)
+
         return result
 
 
@@ -236,11 +242,13 @@ class MergerAppend(BaseFeedConfigModel):
         merger_id     уникальный ID мерджера.
         type          тип объекта - всегда "merger_append".
         items         позиции мерджера.
+        shuffle       флаг для перемешивания полученных данных мерджера.
     """
 
     merger_id: str
     type: Literal["merger_append"]
     items: List[FeedTypes]
+    shuffle: bool = False
 
     async def get_data(
         self,
@@ -294,6 +302,10 @@ class MergerAppend(BaseFeedConfigModel):
             # Если полученных данных хватает, то прерываем итерацию и возвращаем результат.
             if result_limit <= 0:
                 break
+
+        # Если в конфигурации указано "смешать" данные.
+        if self.shuffle:
+            shuffle(result.data)
 
         return result
 
@@ -460,8 +472,8 @@ class MergerPercentage(BaseFeedConfigModel):
 
     merger_id: str
     type: Literal["merger_percentage"]
-    shuffle: bool
     items: List[MergerPercentageItem]
+    shuffle: bool = False
 
     @staticmethod
     async def _merge_items_data(items_data: List[List]) -> List:
@@ -576,7 +588,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     item_to: MergerPercentageItem
     step: int
     size_to_step: int
-    shuffle: bool
+    shuffle: bool = False
 
     @root_validator
     def validate_merger_percentage_gradient(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -744,6 +756,7 @@ class SubFeed(BaseFeedConfigModel):
         type            тип объекта - всегда "subfeed".
         method_name     название клиентского метода для получения данных субфида.
         subfeed_params  статичные параметры для метода субфида.
+        shuffle         флаг для перемешивания полученных данных мерджера.
     """
 
     subfeed_id: str
@@ -751,6 +764,7 @@ class SubFeed(BaseFeedConfigModel):
     method_name: str
     subfeed_params: Dict[str, Any] = {}
     raise_error: Optional[bool] = True
+    shuffle: bool = False
 
     async def get_data(
         self,
@@ -807,6 +821,10 @@ class SubFeed(BaseFeedConfigModel):
 
         if not isinstance(method_result, FeedResultClient):
             raise TypeError('SubFeed function must return "FeedResultClient" instance.')
+
+        # Если в конфигурации указано "смешать" данные.
+        if self.shuffle:
+            shuffle(method_result.data)
 
         result = FeedResult(
             data=method_result.data,
