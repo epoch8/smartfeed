@@ -1,8 +1,5 @@
-from typing import Callable, Dict
-
 import pytest
 
-from smartfeed.examples.example_client import ClientMixerClass
 from smartfeed.manager import FeedManager
 from smartfeed.schemas import (
     FeedConfig,
@@ -42,7 +39,9 @@ async def test_parsing_config() -> None:
     # Merger Percentage Item.
     assert isinstance(feed_manager.feed_config.feed.default.items[0], MergerPercentageItem)
     # SubFeed without SubFeed Params.
-    assert isinstance(feed_manager.feed_config.feed.default.items[0].data, SubFeed)
     assert isinstance(feed_manager.feed_config.feed.positional.items[1].item_from.data, SubFeed)
     assert isinstance(feed_manager.feed_config.feed.positional.items[1].item_to.data, SubFeed)
     assert isinstance(feed_manager.feed_config.feed.positional.items[2].data, SubFeed)
+    # SubFeed with Raise Exception False.
+    assert isinstance(feed_manager.feed_config.feed.default.items[0].data, SubFeed)
+    assert feed_manager.feed_config.feed.default.items[0].data.raise_error is False
