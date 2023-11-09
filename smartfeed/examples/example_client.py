@@ -126,7 +126,7 @@ class ClientMixerClass:
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
         :param limit_to_return: ограничить кол-во результата.
-        :return: массив букв "profile_id" в количестве "limit" штук.
+        :return: массив целых чисел, равный [i for i in range(1, 11)] после удаления дублей.
         """
 
         data = [1, 2, 3, 4, 3, 2, 5, 6, 4, 4, 7, 8, 9, 10, 9, 9, 9]
