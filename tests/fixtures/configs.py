@@ -7,6 +7,7 @@ METHODS_DICT: Dict[str, Callable] = {
     "followings": ClientMixerClass().example_method,
     "empty": ClientMixerClass().empty_method,
     "error": ClientMixerClass().error_method,
+    "doubles": ClientMixerClass().doubles_method,
 }
 
 PARSING_CONFIG_FIXTURE = {

@@ -124,7 +124,7 @@ class MergerViewSession(BaseFeedConfigModel):
     session_live_time: int
     data: FeedTypes
     deduplicate: bool = False
-    dedup_key: str = None
+    dedup_key: str = None  # type: ignore
     shuffle: bool = False
 
     def _get_dedup_key_or_attr(self, item: Any) -> str:
@@ -159,9 +159,7 @@ class MergerViewSession(BaseFeedConfigModel):
         :return: результат удаления дублей.
         """
 
-        deduplicated_data = {
-            self._get_dedup_key_or_attr(item): item for item in data
-        }
+        deduplicated_data = {self._get_dedup_key_or_attr(item): item for item in data}
         return list(deduplicated_data.values())
 
     async def _set_cache(
