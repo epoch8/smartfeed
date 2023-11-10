@@ -111,3 +111,28 @@ class ClientMixerClass:
 
         result = FeedResultClient(data=[], next_page=next_page, has_next_page=False)
         return result
+
+    @staticmethod
+    async def doubles_method(
+        user_id: str,  # pylint: disable=W0613
+        limit: int,  # pylint: disable=W0613
+        next_page: FeedResultNextPageInside,
+        limit_to_return: Optional[int] = None,  # pylint: disable=W0613
+    ) -> FeedResultClient:
+        """
+        Пример клиентского метода, возвращающего данные с дублями.
+
+        :param user_id: ID профиля.
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param limit_to_return: ограничить кол-во результата.
+        :return: массив целых чисел, равный [i for i in range(1, 11)] после удаления дублей.
+        """
+
+        data = [1, 2, 3, 4, 3, 2, 5, 6, 4, 4, 7, 8, 9, 10, 9, 9, 9]
+
+        next_page.after = None
+        next_page.page += 1
+
+        result = FeedResultClient(data=data, next_page=next_page, has_next_page=False)
+        return result

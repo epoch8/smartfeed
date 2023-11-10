@@ -113,6 +113,8 @@ class MergerViewSession(BaseFeedConfigModel):
         session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
         session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
         data                мерджер или субфид.
+        deduplicate         флаг дедупликации (удаления дублей из сессии).
+        dedup_key           название ключа или атрибута, по которому логика дедпликации найдет дубли.
         shuffle             флаг для перемешивания полученных данных мерджера.
     """
 
@@ -121,7 +123,44 @@ class MergerViewSession(BaseFeedConfigModel):
     session_size: int
     session_live_time: int
     data: FeedTypes
+    deduplicate: bool = False
+    dedup_key: str = None  # type: ignore
     shuffle: bool = False
+
+    def _get_dedup_key_or_attr(self, item: Any) -> str:
+        """
+        Метод для получения ключа объекта кешируемой сессии.
+
+        Если указанное в конфиге сессии название ключа имеет значение None,
+        в качестве ключа вернется сам объект.
+        Если название ключа не None, и для одного из объектов ни найден ни ключ, ни атрибут,
+        метод выбросит AssertionError.
+
+        :param item: объект, для которого нужен ключ.
+        :return:  ключ объекта.
+        """
+
+        if not self.dedup_key:
+            return item
+
+        try:
+            dedup_value = item.get(self.dedup_key)
+        except AttributeError:
+            dedup_value = getattr(item, self.dedup_key, None)
+
+        assert dedup_value is not None, f"Deduplication failed: entity {item} has no key or attr {self.dedup_key}"
+        return dedup_value
+
+    def _dedup_data(self, data: List[Any]) -> List[Any]:
+        """
+        Метод для удаления дублей в списке data с сохранением последовательности.
+
+        :param data: список, в котором нужно удалить дубли.
+        :return: результат удаления дублей.
+        """
+
+        deduplicated_data = {self._get_dedup_key_or_attr(item): item for item in data}
+        return list(deduplicated_data.values())
 
     async def _set_cache(
         self,
@@ -149,7 +188,11 @@ class MergerViewSession(BaseFeedConfigModel):
             next_page=FeedResultNextPage(data={}),
             **params,
         )
-        redis_client.set(name=cache_key, value=json.dumps(result.data), ex=self.session_live_time)
+
+        data = result.data
+        if self.deduplicate:
+            data = self._dedup_data(data)
+        redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
 
     async def _get_cache(
         self,

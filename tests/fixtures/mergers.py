@@ -99,3 +99,16 @@ MERGER_VIEW_SESSION_CONFIG = {
         "method_name": "followings",
     },
 }
+
+MERGER_VIEW_SESSION_DUPS_CONFIG = {
+    "merger_id": "merger_view_session_example",
+    "type": "merger_view_session",
+    "deduplicate": True,
+    "session_size": 10,
+    "session_live_time": 300,
+    "data": {
+        "subfeed_id": "subfeed_merger_view_session_example",
+        "type": "subfeed",
+        "method_name": "doubles",
+    },
+}
