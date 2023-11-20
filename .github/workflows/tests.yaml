@@ -1,4 +1,4 @@
-name: Tests
+name: Test
 
 on:
   pull_request:
@@ -37,5 +37,5 @@ jobs:
       - name: Install dependencies
         run: poetry install --all-extras
 
-      - name: Lint with Pylint
-        run: make test
+      - name: Make Test
+        run: poetry run make test
