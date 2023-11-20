@@ -39,3 +39,6 @@ jobs:
 
       - name: Make Test
         run: poetry run make test
+      
+      - name: Make Test Cache
+        run: poetry run make test_cache

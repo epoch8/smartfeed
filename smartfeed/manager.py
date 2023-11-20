@@ -1,5 +1,6 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
+import aioredis
 import redis
 
 from .schemas import FeedConfig, FeedResult, FeedResultNextPage
@@ -10,7 +11,9 @@ class FeedManager:
     Класс FeedManager.
     """
 
-    def __init__(self, config: Dict, methods_dict: Dict, redis_client: Optional[redis.Redis] = None):
+    def __init__(
+        self, config: Dict, methods_dict: Dict, redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None
+    ):
         """
         Инициализация класса FeedManager.
 
