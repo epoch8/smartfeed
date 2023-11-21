@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
+import aioredis
 import redis
 from pydantic import BaseModel, Field, root_validator
 
@@ -86,7 +87,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -194,6 +195,38 @@ class MergerViewSession(BaseFeedConfigModel):
             data = self._dedup_data(data)
         redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
 
+    async def _set_cache_async(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        redis_client: aioredis.Redis,
+        cache_key: str,
+        **params: Any,
+    ) -> None:
+        """
+        Метод для кэширования данных Merger View Session.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param redis_client: объект клиента Redis.
+        :param cache_key: ключ для кэширования.
+        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
+        :return: None.
+        """
+
+        result = await self.data.get_data(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=self.session_size,
+            next_page=FeedResultNextPage(data={}),
+            **params,
+        )
+
+        data = result.data
+        if self.deduplicate:
+            data = self._dedup_data(data)
+        await redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
+
     async def _get_cache(
         self,
         methods_dict: Dict[str, Callable],
@@ -235,13 +268,54 @@ class MergerViewSession(BaseFeedConfigModel):
         )
         return result
 
+    async def _get_cache_async(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: aioredis.Redis,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных Merger View Session из кэша Redis.
+        При отсутствии данных в кэше - получить и сохранить.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: лимит на выдачу данных.
+        :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
+        :param redis_client: объект клиента Redis.
+        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
+        :return: результат получения данных согласно конфигурации фида.
+        """
+
+        # Формируем ключ для кэширования данных мерджера.
+        cache_key = f"{self.merger_id}_{user_id}"
+
+        # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
+        if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:
+            await self._set_cache_async(
+                methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+            )
+
+        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
+        session_data = json.loads(await redis_client.get(name=cache_key))
+        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+        result = FeedResult(
+            data=session_data[(page - 1) * limit :][:limit],
+            next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
+            has_next_page=bool(len(session_data) > limit * page),
+        )
+        return result
+
     async def get_data(
         self,
         methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -261,14 +335,24 @@ class MergerViewSession(BaseFeedConfigModel):
             raise ValueError("Redis client must be provided if using Merger View Session")
 
         # Формируем результат view session мерджера.
-        result = await self._get_cache(
-            methods_dict=methods_dict,
-            user_id=user_id,
-            limit=limit,
-            next_page=next_page,
-            redis_client=redis_client,
-            **params,
-        )
+        if isinstance(redis_client, aioredis.Redis):
+            result = await self._get_cache_async(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                **params,
+            )
+        else:
+            result = await self._get_cache(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                **params,
+            )
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:
@@ -299,7 +383,7 @@ class MergerAppend(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -395,7 +479,7 @@ class MergerPositional(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -561,7 +645,7 @@ class MergerPercentage(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -704,7 +788,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -815,7 +899,7 @@ class SubFeed(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[redis.Redis] = None,
+        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
