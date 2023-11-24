@@ -336,7 +336,7 @@ class MergerViewSession(BaseFeedConfigModel):
             raise ValueError("Redis client must be provided if using Merger View Session")
 
         # Формируем результат view session мерджера.
-        if isinstance(redis_client, aioredis.Redis) or isinstance(redis_client, aioredis_cluster.RedisCluster):
+        if isinstance(redis_client, (aioredis.Redis, aioredis_cluster.RedisCluster)):
             result = await self._get_cache_async(
                 methods_dict=methods_dict,
                 user_id=user_id,
