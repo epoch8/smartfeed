@@ -226,7 +226,8 @@ class MergerViewSession(BaseFeedConfigModel):
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
-        await redis_client.set(cache_key, json.dumps(data), self.session_live_time)
+        await redis_client.set(cache_key, json.dumps(data))
+        await redis_client.expire(cache_key, self.session_live_time)
 
     async def _get_cache(
         self,
