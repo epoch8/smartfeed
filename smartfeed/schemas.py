@@ -5,6 +5,7 @@ from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
 import aioredis
+import aioredis_cluster
 import redis
 from pydantic import BaseModel, Field, root_validator
 
@@ -335,7 +336,7 @@ class MergerViewSession(BaseFeedConfigModel):
             raise ValueError("Redis client must be provided if using Merger View Session")
 
         # Формируем результат view session мерджера.
-        if isinstance(redis_client, aioredis.Redis):
+        if isinstance(redis_client, aioredis.Redis) or isinstance(redis_client, aioredis_cluster.RedisCluster):
             result = await self._get_cache_async(
                 methods_dict=methods_dict,
                 user_id=user_id,
