@@ -226,7 +226,8 @@ class MergerViewSession(BaseFeedConfigModel):
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
-        await redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
+        await redis_client.set(cache_key, json.dumps(data))
+        await redis_client.expire(cache_key, self.session_live_time)
 
     async def _get_cache(
         self,
@@ -301,7 +302,8 @@ class MergerViewSession(BaseFeedConfigModel):
             )
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = json.loads(await redis_client.get(name=cache_key))
+        session_data = await redis_client.get(cache_key)
+        session_data = json.loads(session_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
