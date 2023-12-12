@@ -4,9 +4,8 @@ from abc import ABC, abstractmethod
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
-import aioredis
-import aioredis_cluster
 import redis
+from redis.asyncio import Redis as AsyncRedis, RedisCluster as AsyncRedisCluster
 from pydantic import BaseModel, Field, root_validator
 
 FeedTypes = Annotated[
@@ -88,7 +87,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -200,7 +199,7 @@ class MergerViewSession(BaseFeedConfigModel):
         self,
         methods_dict: Dict[str, Callable],
         user_id: Any,
-        redis_client: aioredis.Redis,
+        redis_client: AsyncRedis,
         cache_key: str,
         **params: Any,
     ) -> None:
@@ -276,7 +275,7 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: aioredis.Redis,
+        redis_client: AsyncRedis,
         **params: Any,
     ) -> FeedResult:
         """
@@ -318,7 +317,7 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -338,7 +337,7 @@ class MergerViewSession(BaseFeedConfigModel):
             raise ValueError("Redis client must be provided if using Merger View Session")
 
         # Формируем результат view session мерджера.
-        if isinstance(redis_client, (aioredis.Redis, aioredis_cluster.RedisCluster)):
+        if isinstance(redis_client, (AsyncRedis, AsyncRedisCluster)):
             result = await self._get_cache_async(
                 methods_dict=methods_dict,
                 user_id=user_id,
@@ -386,7 +385,7 @@ class MergerAppend(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -482,7 +481,7 @@ class MergerPositional(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -648,7 +647,7 @@ class MergerPercentage(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -791,7 +790,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -902,7 +901,7 @@ class SubFeed(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
