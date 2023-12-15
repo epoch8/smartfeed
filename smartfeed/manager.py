@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional, Union
 
-import aioredis
 import redis
+from redis.asyncio import Redis as AsyncRedis
 
 from .schemas import FeedConfig, FeedResult, FeedResultNextPage
 
@@ -12,7 +12,7 @@ class FeedManager:
     """
 
     def __init__(
-        self, config: Dict, methods_dict: Dict, redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None
+        self, config: Dict, methods_dict: Dict, redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None
     ):
         """
         Инициализация класса FeedManager.
