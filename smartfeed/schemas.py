@@ -5,8 +5,9 @@ from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
 import redis
-from redis.asyncio import Redis as AsyncRedis, RedisCluster as AsyncRedisCluster
 from pydantic import BaseModel, Field, root_validator
+from redis.asyncio import Redis as AsyncRedis
+from redis.asyncio import RedisCluster as AsyncRedisCluster
 
 FeedTypes = Annotated[
     Union[
@@ -302,7 +303,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
         session_data = await redis_client.get(cache_key)
-        session_data = json.loads(session_data)
+        session_data = json.loads(session_data)  # type: ignore[arg-type]
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],

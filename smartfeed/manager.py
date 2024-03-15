@@ -11,9 +11,7 @@ class FeedManager:
     Класс FeedManager.
     """
 
-    def __init__(
-        self, config: Dict, methods_dict: Dict, redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None
-    ):
+    def __init__(self, config: Dict, methods_dict: Dict, redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None):
         """
         Инициализация класса FeedManager.
 
