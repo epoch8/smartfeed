@@ -1,17 +1,13 @@
-import base64
+import inspect
 import json
 from abc import ABC, abstractmethod
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
-import aiohttp
-import orjson
 import redis
 from pydantic import BaseModel, Field, root_validator
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio import RedisCluster as AsyncRedisCluster
-from rq import Queue
-from src.apps.base.integrations.redis.client import AsyncRedisClient
 
 FeedTypes = Annotated[
     Union[
@@ -20,7 +16,6 @@ FeedTypes = Annotated[
         "MergerPercentage",
         "MergerPercentageGradient",
         "MergerViewSession",
-        "MergerViewSessionIncremental",
         "SubFeed",
     ],
     Field(discriminator="type"),
@@ -89,6 +84,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
     @abstractmethod
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -98,6 +94,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         """
         Метод для получения данных.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -169,6 +166,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
     async def _set_cache(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         redis_client: redis.Redis,
         cache_key: str,
@@ -177,6 +175,7 @@ class MergerViewSession(BaseFeedConfigModel):
         """
         Метод для кэширования данных Merger View Session.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param redis_client: объект клиента Redis.
         :param cache_key: ключ для кэширования.
@@ -185,6 +184,7 @@ class MergerViewSession(BaseFeedConfigModel):
         """
 
         result = await self.data.get_data(
+            methods_dict=methods_dict,
             user_id=user_id,
             limit=self.session_size,
             next_page=FeedResultNextPage(data={}),
@@ -198,6 +198,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
     async def _set_cache_async(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         redis_client: AsyncRedis,
         cache_key: str,
@@ -206,6 +207,7 @@ class MergerViewSession(BaseFeedConfigModel):
         """
         Метод для кэширования данных Merger View Session.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param redis_client: объект клиента Redis.
         :param cache_key: ключ для кэширования.
@@ -214,6 +216,7 @@ class MergerViewSession(BaseFeedConfigModel):
         """
 
         result = await self.data.get_data(
+            methods_dict=methods_dict,
             user_id=user_id,
             limit=self.session_size,
             next_page=FeedResultNextPage(data={}),
@@ -228,6 +231,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
     async def _get_cache(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -238,6 +242,7 @@ class MergerViewSession(BaseFeedConfigModel):
         Метод для получения данных Merger View Session из кэша Redis.
         При отсутствии данных в кэше - получить и сохранить.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: лимит на выдачу данных.
         :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
@@ -251,7 +256,9 @@ class MergerViewSession(BaseFeedConfigModel):
 
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache(user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params)
+            await self._set_cache(
+                methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+            )
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
         session_data = json.loads(redis_client.get(name=cache_key))  # type: ignore
@@ -265,6 +272,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
     async def _get_cache_async(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -275,6 +283,7 @@ class MergerViewSession(BaseFeedConfigModel):
         Метод для получения данных Merger View Session из кэша Redis.
         При отсутствии данных в кэше - получить и сохранить.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: лимит на выдачу данных.
         :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
@@ -288,7 +297,9 @@ class MergerViewSession(BaseFeedConfigModel):
 
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache_async(user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params)
+            await self._set_cache_async(
+                methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+            )
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
         session_data = await redis_client.get(cache_key)
@@ -303,6 +314,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -312,6 +324,7 @@ class MergerViewSession(BaseFeedConfigModel):
         """
         Метод для получения данных методом append.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -327,6 +340,7 @@ class MergerViewSession(BaseFeedConfigModel):
         # Формируем результат view session мерджера.
         if isinstance(redis_client, (AsyncRedis, AsyncRedisCluster)):
             result = await self._get_cache_async(
+                methods_dict=methods_dict,
                 user_id=user_id,
                 limit=limit,
                 next_page=next_page,
@@ -335,437 +349,7 @@ class MergerViewSession(BaseFeedConfigModel):
             )
         else:
             result = await self._get_cache(
-                user_id=user_id,
-                limit=limit,
-                next_page=next_page,
-                redis_client=redis_client,
-                **params,
-            )
-
-        # Если в конфигурации указано "смешать" данные.
-        if self.shuffle:
-            shuffle(result.data)
-
-        return result
-
-
-# Это надо обязательно покрыть тестами
-class MergerViewSessionIncremental(BaseFeedConfigModel):
-    """
-    Модель мерджера с инкрементальным кэшированием.
-
-    Attributes:
-        merger_id           уникальный ID мерджера.
-        type                тип объекта - всегда "merger_view_session".
-        session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
-        session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
-        data                мерджер или субфид.
-        deduplicate         флаг дедупликации (удаления дублей из сессии).
-        dedup_key           название ключа или атрибута, по которому логика дедпликации найдет дубли.
-        shuffle             флаг для перемешивания полученных данных мерджера.
-    """
-
-    merger_id: str
-    type: Literal["merger_view_session_incremental"]
-    session_live_time: int
-    data: FeedTypes
-    deduplicate: bool = False
-    dedup_key: str = None  # type: ignore
-    shuffle: bool = False
-
-    def _get_dedup_key_or_attr(self, item: Any) -> str:
-        """
-        Метод для получения ключа объекта кешируемой сессии.
-
-        Если указанное в конфиге сессии название ключа имеет значение None,
-        в качестве ключа вернется сам объект.
-        Если название ключа не None, и для одного из объектов ни найден ни ключ, ни атрибут,
-        метод выбросит AssertionError.
-
-        :param item: объект, для которого нужен ключ.
-        :return:  ключ объекта.
-        """
-
-        if not self.dedup_key:
-            return item
-
-        try:
-            dedup_value = item.get(self.dedup_key)
-        except AttributeError:
-            dedup_value = getattr(item, self.dedup_key, None)
-
-        assert dedup_value is not None, f"Deduplication failed: entity {item} has no key or attr {self.dedup_key}"
-        return dedup_value
-
-    def _dedup_data(self, data: List[Any]) -> List[Any]:
-        """
-        Метод для удаления дублей в списке data с сохранением последовательности.
-
-        :param data: список, в котором нужно удалить дубли.
-        :return: результат удаления дублей.
-        """
-
-        deduplicated_data = {self._get_dedup_key_or_attr(item): item for item in data}
-        return list(deduplicated_data.values())
-
-    async def _set_cache(
-        self,
-        user_id: Any,
-        limit: int,
-        redis_client: redis.Redis,
-        cache_key: str,
-        **params: Any,
-    ) -> None:
-        """
-        Метод для кэширования данных Merger View Session.
-
-        :param user_id: ID объекта для получения данных (например, ID пользователя).
-        :param limit: лимит на выдачу данных.
-        :param redis_client: объект клиента Redis.
-        :param cache_key: ключ для кэширования.
-        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: None.
-        """
-
-        result = await self.data.get_data(
-            user_id=user_id,
-            limit=limit,
-            next_page=FeedResultNextPage(data={}),
-            **params,
-        )
-        data = result.data
-        if self.deduplicate:
-            data = self._dedup_data(data)
-        redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
-        redis_client.set(
-            name=f"{cache_key}_extend_cursor", value=orjson.dumps(result.next_page.dict()), ex=self.session_live_time
-        )
-        return result.next_page
-
-    async def _set_cache_async(
-        self,
-        user_id: Any,
-        limit: int,
-        redis_client: redis.Redis,
-        cache_key: str,
-        **params: Any,
-    ) -> None:
-        """
-        Метод для кэширования данных Merger View Session.
-
-        :param user_id: ID объекта для получения данных (например, ID пользователя).
-        :param limit: лимит на выдачу данных.
-        :param redis_client: объект клиента Redis.
-        :param cache_key: ключ для кэширования.
-        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: None.
-        """
-
-        result = await self.data.get_data(
-            user_id=user_id,
-            limit=limit,
-            next_page=FeedResultNextPage(data={}),
-            **params,
-        )
-        data = result.data
-        if self.deduplicate:
-            data = self._dedup_data(data)
-        await redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
-        await redis_client.set(
-            name=f"{cache_key}_extend_cursor", value=orjson.dumps(result.next_page.dict()), ex=self.session_live_time
-        )
-        return result.next_page
-
-    async def _extend_cache(
-        self,
-        user_id: Any,
-        limit: int,
-        session_data: List[Any],
-        extend_cursor: Dict[str, Any],
-        redis_host: str,
-        redis_port: int,
-        redis_is_async: bool,
-        cache_key: str,
-        **params: Any,
-    ) -> None:
-        """
-        Метод для расширения кэша данных Merger View Session.
-        """
-
-        existing_ids = [self._get_dedup_key_or_attr(item) for item in session_data]
-        result = await self.data.get_data(
-            user_id=user_id,
-            limit=limit,
-            next_page=FeedResultNextPage.parse_obj(extend_cursor),
-            existing_ids=existing_ids,
-            **params,
-        )
-        data = result.data
-        session_data.extend(data)
-        if self.deduplicate:
-            data = self._dedup_data(data)
-        redis_client = redis.Redis(host=redis_host, port=redis_port)
-        redis_client.set(name=cache_key, value=json.dumps(session_data), ex=self.session_live_time)
-        redis_client.set(
-            name=f"{cache_key}_extend_cursor", value=orjson.dumps(result.next_page.dict()), ex=self.session_live_time
-        )
-
-    async def _extend_cache_async(
-        self,
-        user_id: Any,
-        limit: int,
-        session_data: List[Any],
-        extend_cursor: Dict[str, Any],
-        redis_host: str,
-        redis_port: int,
-        redis_is_async: bool,
-        cache_key: str,
-        **params: Any,
-    ) -> None:
-        """
-        Метод для расширения кэша данных Merger View Session.
-        """
-        # дедупликация относительно сессии на уровне субфида удобнее с точки зрения количества запросов и дебага
-        # ОБСУДИТЬ!
-        existing_ids = [self._get_dedup_key_or_attr(item) for item in session_data]
-        result = await self.data.get_data(
-            user_id=user_id,
-            limit=limit,
-            next_page=FeedResultNextPage.parse_obj(extend_cursor),
-            existing_ids=existing_ids,
-            **params,
-        )
-        data = result.data
-        session_data.extend(data)
-        if self.deduplicate:
-            data = self._dedup_data(data)
-        redis_client = AsyncRedisClient(host=redis_host, port=redis_port)
-        await redis_client.set(name=cache_key, value=json.dumps(session_data), ex=self.session_live_time)
-        await redis_client.set(
-            name=f"{cache_key}_extend_cursor", value=orjson.dumps(result.next_page.dict()), ex=self.session_live_time
-        )
-
-    async def _get_cache(
-        self,
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: redis.Redis,
-        **params: Any,
-    ) -> FeedResult:
-        """
-        Метод для получения данных Merger View Session из кэша Redis.
-        При отсутствии данных в кэше - получить и сохранить.
-
-        :param user_id: ID объекта для получения данных (например, ID пользователя).
-        :param limit: лимит на выдачу данных.
-        :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
-        :param redis_client: объект клиента Redis.
-        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: результат получения данных согласно конфигурации фида.
-        """
-
-        # Формируем ключ для кэширования данных мерджера.
-        cache_key = f"{self.merger_id}_{user_id}"
-        print("setting cache", cache_key)
-
-        # пустой кеш: запрашиваем первую страницу, кешируем, отдаем, кидаем запрос на вторую в очередь по курсору
-        # кешируем курсор второй страницы (extend_cursor)
-
-        # получаем запрос на вторую страницу: достаем сессию из кеша, обрезаем.
-        # достаем из кеша extend_cursor, делаем по нему extend, кешируем курсор от третьей.
-        # сессия всегда растет по актуальному extend курсору, пагинируется по лимитам как обычная сессия
-        if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache(
-                user_id=user_id, limit=limit, redis_client=redis_client, cache_key=cache_key, **params
-            )
-
-        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = json.loads(redis_client.get(name=cache_key))  # type: ignore
-        extend_cursor = orjson.loads(redis_client.get(name=f"{cache_key}_extend_cursor"))  # type: ignore
-        q = Queue(connection=redis_client)
-        redis_is_async = False
-        redis_host = redis_client.get_connection_kwargs()["host"]
-        redis_port = redis_client.get_connection_kwargs()["port"]
-        q.enqueue(
-            self._extend_cache,
-            user_id,
-            limit,
-            session_data,
-            extend_cursor,
-            redis_host,
-            redis_port,
-            redis_is_async,
-            cache_key,
-            **params,
-        )
-
-        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
-
-        # case where cache increment did not finish in worker
-        try:
-            session_data = session_data[(page - 1) * limit :][:limit]
-            has_next_page = extend_cursor.has_next_page
-        except:
-            session_data = await self.data.get_data(
-                user_id=user_id,
-                limit=limit,
-                next_page=FeedResultNextPage(data={}),
-                **params,
-            )
-            cursor = session_data.next_page.dict()
-            has_next_page = session_data.has_next_page
-            session_data = session_data.data
-            if self.deduplicate:
-                session_data = self._dedup_data(session_data)
-            session_data = session_data[(page - 1) * limit :][:limit]
-            q.enqueue(
-                self._extend_cache,
-                user_id,
-                limit,
-                session_data,
-                cursor,
-                redis_host,
-                redis_port,
-                redis_is_async,
-                cache_key,
-                **params,
-            )
-
-        result = FeedResult(
-            data=session_data,
-            next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
-            has_next_page=has_next_page,
-        )
-        return result
-
-    # TODO: implement async version
-    async def _get_cache_async(
-        self,
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: AsyncRedis,
-        **params: Any,
-    ) -> FeedResult:
-        """
-        Метод для получения данных Merger View Session из кэша Redis.
-        При отсутствии данных в кэше - получить и сохранить.
-
-        :param user_id: ID объекта для получения данных (например, ID пользователя).
-        :param limit: лимит на выдачу данных.
-        :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
-        :param redis_client: объект клиента Redis.
-        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: результат получения данных согласно конфигурации фида.
-        """
-
-        # Формируем ключ для кэширования данных мерджера.
-        cache_key = f"{self.merger_id}_{user_id}"
-        print("setting cache", cache_key)
-
-        # пустой кеш: запрашиваем первую страницу, кешируем, отдаем, кидаем запрос на вторую в очередь по курсору
-        # кешируем курсор второй страницы (extend_cursor)
-
-        # получаем запрос на вторую страницу: достаем сессию из кеша, обрезаем.
-        # достаем из кеша extend_cursor, делаем по нему extend, кешируем курсор от третьей.
-        # сессия всегда растет по актуальному extend курсору, пагинируется по лимитам как обычная сессия
-        if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache_async(
-                user_id=user_id, limit=limit, redis_client=redis_client, cache_key=cache_key, **params
-            )
-
-        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = json.loads(await redis_client.get(name=cache_key))  # type: ignore
-        extend_cursor = orjson.loads(await redis_client.get(name=f"{cache_key}_extend_cursor"))  # type: ignore
-        q = Queue(connection=redis_client)
-        redis_is_async = True
-        redis_host = redis_client.get_connection_kwargs()["host"]
-        redis_port = redis_client.get_connection_kwargs()["port"]
-        q.enqueue(
-            self._extend_cache_async,
-            user_id,
-            limit,
-            session_data,
-            extend_cursor,
-            redis_host,
-            redis_port,
-            redis_is_async,
-            cache_key,
-            **params,
-        )
-
-        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
-        # TODO: handle case where cache increment did not finish in worker
-        try:
-            session_data = session_data[(page - 1) * limit :][:limit]
-        except:
-            session_data = await self.data.get_data(
-                user_id=user_id,
-                limit=limit,
-                next_page=FeedResultNextPage(data={}),
-                **params,
-            )
-            cursor = session_data.next_page.dict()
-            session_data = session_data.data
-            if self.deduplicate:
-                session_data = self._dedup_data(session_data)
-            session_data = session_data[(page - 1) * limit :][:limit]
-            q.enqueue(
-                self._extend_cache,
-                user_id,
-                limit,
-                session_data,
-                cursor,
-                redis_host,
-                redis_port,
-                redis_is_async,
-                cache_key,
-                **params,
-            )
-
-        has_next_page = session_data.has_next_page
-        result = FeedResult(
-            data=session_data,
-            next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
-            has_next_page=has_next_page,
-        )
-        return result
-
-    async def get_data(
-        self,
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
-        **params: Any,
-    ) -> FeedResult:
-        """
-        Метод для получения данных методом append.
-
-        :param user_id: ID объекта для получения данных (например, ID пользователя).
-        :param limit: кол-во элементов.
-        :param next_page: курсор пагинации.
-        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
-        :param params: для метода класса.
-        :return: список данных методом append.
-        """
-
-        # Проверяем наличие клиента Redis в конфигурации фида.
-        if not redis_client:
-            raise ValueError("Redis client must be provided if using Merger View Session")
-
-        # Формируем результат view session мерджера.
-        if isinstance(redis_client, (AsyncRedis, AsyncRedisCluster)):
-            result = await self._get_cache_async(
-                user_id=user_id,
-                limit=limit,
-                next_page=next_page,
-                redis_client=redis_client,
-                **params,
-            )
-        else:
-            result = await self._get_cache(
+                methods_dict=methods_dict,
                 user_id=user_id,
                 limit=limit,
                 next_page=next_page,
@@ -798,6 +382,7 @@ class MergerAppend(BaseFeedConfigModel):
 
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -807,6 +392,7 @@ class MergerAppend(BaseFeedConfigModel):
         """
         Метод для получения данных методом append.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -822,6 +408,7 @@ class MergerAppend(BaseFeedConfigModel):
         for item in self.items:
             # Получаем данные из позиции мерджера.
             item_result = await item.get_data(
+                methods_dict=methods_dict,
                 user_id=user_id,
                 limit=result_limit,
                 next_page=next_page,
@@ -891,6 +478,7 @@ class MergerPositional(BaseFeedConfigModel):
 
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -900,6 +488,7 @@ class MergerPositional(BaseFeedConfigModel):
         """
         Метод для получения данных в позиционном соотношении из данных позиций.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -910,6 +499,7 @@ class MergerPositional(BaseFeedConfigModel):
 
         # Получаем данные "default".
         default_res = await self.default.get_data(
+            methods_dict=methods_dict,
             user_id=user_id,
             limit=limit,
             next_page=next_page,
@@ -956,6 +546,7 @@ class MergerPositional(BaseFeedConfigModel):
 
         # Получаем данные "positional".
         pos_res = await self.positional.get_data(
+            methods_dict=methods_dict,
             user_id=user_id,
             limit=len(page_positions),
             next_page=next_page,
@@ -1053,6 +644,7 @@ class MergerPercentage(BaseFeedConfigModel):
 
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -1062,6 +654,7 @@ class MergerPercentage(BaseFeedConfigModel):
         """
         Метод для получения данных в процентном соотношении из данных позиций.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -1069,6 +662,7 @@ class MergerPercentage(BaseFeedConfigModel):
         :param params: для метода класса.
         :return: список данных в процентном соотношении.
         """
+
         # Формируем результат процентного мерджера.
         result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
@@ -1076,6 +670,7 @@ class MergerPercentage(BaseFeedConfigModel):
         for item in self.items:
             # Получаем данные из позиций процентного мерджера.
             item_result = await item.data.get_data(
+                methods_dict=methods_dict,
                 user_id=user_id,
                 limit=limit * item.percentage // 100,
                 next_page=next_page,
@@ -1192,6 +787,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
 
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -1201,6 +797,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         """
         Метод для получения данных в процентном соотношении с градиентом из данных позиций.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -1231,6 +828,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
 
         # Получаем данные из позиций в процентном соотношений.
         item_from = await self.item_from.data.get_data(
+            methods_dict=methods_dict,
             user_id=user_id,
             limit=limits_and_percents["limit_from"],
             next_page=next_page,
@@ -1238,6 +836,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             **params,
         )
         item_to = await self.item_to.data.get_data(
+            methods_dict=methods_dict,
             user_id=user_id,
             limit=limits_and_percents["limit_to"],
             next_page=next_page,
@@ -1299,6 +898,7 @@ class SubFeed(BaseFeedConfigModel):
 
     async def get_data(
         self,
+        methods_dict: Dict[str, Callable],
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
@@ -1308,6 +908,7 @@ class SubFeed(BaseFeedConfigModel):
         """
         Метод для получения данных из метода субфида.
 
+        :param methods_dict: словарь с используемыми методами.
         :param user_id: ID объекта для получения данных (например, ID пользователя).
         :param limit: кол-во элементов.
         :param next_page: курсор пагинации.
@@ -1315,32 +916,29 @@ class SubFeed(BaseFeedConfigModel):
         :param params: параметры для метода.
         :return: список данных.
         """
+
         # Формируем next_page конкретного субфида.
         subfeed_next_page = FeedResultNextPageInside(
             page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
             after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
         )
-        method_params = {**params, **self.subfeed_params}
-        encoded_method_params = base64.urlsafe_b64encode(orjson.dumps(method_params)).decode()
-        request_params = {
-            "profile_id": user_id,
-            "limit": limit,
-            "after": base64.urlsafe_b64encode(orjson.dumps(subfeed_next_page.dict())).decode(),
-            "params": encoded_method_params,
-        }
+
+        # Формируем params для функции субфида.
+        method_args = inspect.getfullargspec(methods_dict[self.method_name]).args
+        method_params: Dict[str, Any] = {}
+        for arg in method_args:
+            if arg in params:
+                method_params[arg] = params[arg]
 
         # Получаем результат функции клиента в формате SubFeedResult.
-        # TODO: fix this shit!
-        api_endpoint = params["api_endpoint"]
         try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{api_endpoint}/{self.method_name}"  # TODO: Поменять на реальный адрес
-                async with session.get(url, params=request_params) as response:
-                    method_result = await response.json()
-                    method_result["next_page"] = FeedResultNextPageInside.parse_obj(
-                        orjson.loads(base64.urlsafe_b64decode(method_result["next_page"]))
-                    )
-                    method_result = FeedResultClient(**method_result)
+            method_result = await methods_dict[self.method_name](
+                user_id=user_id,
+                limit=limit,
+                next_page=subfeed_next_page,
+                **method_params,
+                **self.subfeed_params,
+            )
         except (Exception,) as _:
             if self.raise_error:
                 raise
@@ -1390,4 +988,3 @@ MergerPercentageItem.update_forward_refs()
 MergerAppend.update_forward_refs()
 MergerPercentageGradient.update_forward_refs()
 MergerViewSession.update_forward_refs()
-MergerViewSessionIncremental.update_forward_refs()
