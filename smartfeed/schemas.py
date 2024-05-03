@@ -4,10 +4,10 @@ from abc import ABC, abstractmethod
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
-import aioredis
-import aioredis_cluster
 import redis
 from pydantic import BaseModel, Field, root_validator
+from redis.asyncio import Redis as AsyncRedis
+from redis.asyncio import RedisCluster as AsyncRedisCluster
 
 FeedTypes = Annotated[
     Union[
@@ -88,7 +88,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -200,7 +200,7 @@ class MergerViewSession(BaseFeedConfigModel):
         self,
         methods_dict: Dict[str, Callable],
         user_id: Any,
-        redis_client: aioredis.Redis,
+        redis_client: AsyncRedis,
         cache_key: str,
         **params: Any,
     ) -> None:
@@ -276,7 +276,7 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: aioredis.Redis,
+        redis_client: AsyncRedis,
         **params: Any,
     ) -> FeedResult:
         """
@@ -303,7 +303,7 @@ class MergerViewSession(BaseFeedConfigModel):
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
         session_data = await redis_client.get(cache_key)
-        session_data = json.loads(session_data)
+        session_data = json.loads(session_data)  # type: ignore[arg-type]
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
@@ -318,7 +318,7 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -338,7 +338,7 @@ class MergerViewSession(BaseFeedConfigModel):
             raise ValueError("Redis client must be provided if using Merger View Session")
 
         # Формируем результат view session мерджера.
-        if isinstance(redis_client, (aioredis.Redis, aioredis_cluster.RedisCluster)):
+        if isinstance(redis_client, (AsyncRedis, AsyncRedisCluster)):
             result = await self._get_cache_async(
                 methods_dict=methods_dict,
                 user_id=user_id,
@@ -386,7 +386,7 @@ class MergerAppend(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -482,7 +482,7 @@ class MergerPositional(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -648,7 +648,7 @@ class MergerPercentage(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -791,7 +791,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -902,7 +902,7 @@ class SubFeed(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, aioredis.Redis]] = None,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
         **params: Any,
     ) -> FeedResult:
         """
