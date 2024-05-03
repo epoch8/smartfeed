@@ -6,7 +6,7 @@ import pytest
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerViewSession
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_VIEW_SESSION_CONFIG, MERGER_VIEW_SESSION_DUPS_CONFIG
-from tests.fixtures.redis import async_redis_client, redis_client
+from tests.fixtures.redis import redis_client
 
 
 @pytest.mark.asyncio
