@@ -1,3 +1,6 @@
+# TODO: Refactor this module
+# pylint: disable=too-many-arguments, too-many-locals, too-many-lines
+
 import inspect
 import json
 from abc import ABC, abstractmethod
@@ -16,6 +19,7 @@ FeedTypes = Annotated[
         "MergerPercentage",
         "MergerPercentageGradient",
         "MergerViewSession",
+        "MergerViewSessionPartial",
         "SubFeed",
     ],
     Field(discriminator="type"),
@@ -89,6 +93,8 @@ class BaseFeedConfigModel(ABC, BaseModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -170,6 +176,8 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         redis_client: redis.Redis,
         cache_key: str,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> None:
         """
@@ -188,6 +196,8 @@ class MergerViewSession(BaseFeedConfigModel):
             user_id=user_id,
             limit=self.session_size,
             next_page=FeedResultNextPage(data={}),
+            existing_ids=existing_ids,
+            deduplication_key=deduplication_key,
             **params,
         )
 
@@ -202,6 +212,8 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         redis_client: AsyncRedis,
         cache_key: str,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> None:
         """
@@ -220,6 +232,8 @@ class MergerViewSession(BaseFeedConfigModel):
             user_id=user_id,
             limit=self.session_size,
             next_page=FeedResultNextPage(data={}),
+            existing_ids=existing_ids,
+            deduplication_key=deduplication_key,
             **params,
         )
 
@@ -236,6 +250,8 @@ class MergerViewSession(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: redis.Redis,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -257,7 +273,13 @@ class MergerViewSession(BaseFeedConfigModel):
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
             await self._set_cache(
-                methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+                methods_dict=methods_dict,
+                user_id=user_id,
+                redis_client=redis_client,
+                cache_key=cache_key,
+                existing_ids=existing_ids,
+                deduplication_key=deduplication_key,
+                **params,
             )
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
@@ -277,6 +299,8 @@ class MergerViewSession(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: AsyncRedis,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -298,7 +322,13 @@ class MergerViewSession(BaseFeedConfigModel):
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:
             await self._set_cache_async(
-                methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+                methods_dict=methods_dict,
+                user_id=user_id,
+                redis_client=redis_client,
+                cache_key=cache_key,
+                existing_ids=existing_ids,
+                deduplication_key=deduplication_key,
+                **params,
             )
 
         # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
@@ -319,6 +349,8 @@ class MergerViewSession(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -345,10 +377,252 @@ class MergerViewSession(BaseFeedConfigModel):
                 limit=limit,
                 next_page=next_page,
                 redis_client=redis_client,
+                existing_ids=existing_ids,
+                deduplication_key=deduplication_key,
                 **params,
             )
         else:
             result = await self._get_cache(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                existing_ids=existing_ids,
+                deduplication_key=deduplication_key,
+                **params,
+            )
+
+        # Если в конфигурации указано "смешать" данные.
+        if self.shuffle:
+            shuffle(result.data)
+
+        return result
+
+
+class MergerViewSessionPartial(BaseFeedConfigModel):
+    """
+    Модель мерджера с частичным кэшированием (данные из субфидов запрашиваются в реальном времени,
+    дедуплицируются относительно ранее отдававшихся).
+
+    Attributes:
+        merger_id           уникальный ID мерджера.
+        type                тип объекта - всегда "merger_view_session".
+        view_session        флаг использования механизма расчета всего фида сразу и сохранения в кэш.
+        session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
+        session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
+        data                мерджер или субфид.
+        deduplicate         флаг дедупликации (удаления дублей из сессии).
+        dedup_key           название ключа или атрибута, по которому логика дедпликации найдет дубли.
+        shuffle             флаг для перемешивания полученных данных мерджера.
+    """
+
+    merger_id: str
+    type: Literal["merger_view_session_partial"]
+    session_size: int
+    session_live_time: int
+    data: FeedTypes
+    deduplicate: bool = False
+    dedup_key: str = None  # type: ignore
+    shuffle: bool = False
+
+    def _get_dedup_key_or_attr(self, item: Any) -> str:
+        """
+        Метод для получения ключа объекта кешируемой сессии.
+
+        Если указанное в конфиге сессии название ключа имеет значение None,
+        в качестве ключа вернется сам объект.
+        Если название ключа не None, и для одного из объектов ни найден ни ключ, ни атрибут,
+        метод выбросит AssertionError.
+
+        :param item: объект, для которого нужен ключ.
+        :return:  ключ объекта.
+        """
+
+        if not self.dedup_key:
+            return item
+
+        try:
+            dedup_value = item.get(self.dedup_key)
+        except AttributeError:
+            dedup_value = getattr(item, self.dedup_key, None)
+
+        assert dedup_value is not None, f"Deduplication failed: entity {item} has no key or attr {self.dedup_key}"
+        return dedup_value
+
+    def _dedup_data(self, data: List[Any]) -> List[Any]:
+        """
+        Метод для удаления дублей в списке data с сохранением последовательности.
+
+        :param data: список, в котором нужно удалить дубли.
+        :return: результат удаления дублей.
+        """
+
+        deduplicated_data = {self._get_dedup_key_or_attr(item): item for item in data}
+        return list(deduplicated_data.values())
+
+    def _get_dedup_keys(self, data: List[Any]) -> List[str]:
+        return [self._get_dedup_key_or_attr(item) for item in data]
+
+    async def _get_data_async(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        **params: Any,
+    ) -> FeedResult:
+        # Формируем ключ для кэширования данных мерджера. В кеше хранятся только ключи дедупликации.
+        cache_key = f"{self.merger_id}_{user_id}"
+
+        if not await redis_client.exists(cache_key):
+            dedup_keys = None
+        else:
+            dedup_keys = json.loads(await redis_client.get(name=cache_key))
+
+        if "existing_ids" in params:
+            if params["existing_ids"] and dedup_keys:
+                dedup_keys.extend(params["existing_ids"])
+            elif params["existing_ids"]:
+                dedup_keys = params["existing_ids"]
+            del params["existing_ids"]
+
+        if "deduplication_key" in params:
+            if (
+                params["deduplication_key"] != self.dedup_key
+                and self.dedup_key is not None
+                and params["deduplication_key"] is not None
+            ):
+
+                raise ValueError("Deduplication key in params is not equal to deduplication key in config")
+            if self.dedup_key is not None:
+                del params["deduplication_key"]
+            else:
+                self.dedup_key = params["deduplication_key"]
+                del params["deduplication_key"]
+
+        result = await self.data.get_data(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=limit,
+            next_page=next_page,
+            existing_ids=dedup_keys,
+            deduplication_key=self.dedup_key,
+            **params,
+        )
+        data = result.data
+        if self.deduplicate:
+            data = self._dedup_data(data)
+        if dedup_keys is None:
+            dedup_keys = self._get_dedup_keys(data)
+        else:
+            dedup_keys.extend(self._get_dedup_keys(data))
+        dedup_keys = list(set(dedup_keys))
+        await redis_client.set(cache_key, json.dumps(dedup_keys))
+        await redis_client.expire(cache_key, self.session_live_time)
+
+        return result
+
+    async def _get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        **params: Any,
+    ) -> FeedResult:
+        # Формируем ключ для кэширования данных мерджера. В кеше хранятся только ключи дедупликации.
+        cache_key = f"{self.merger_id}_{user_id}"
+
+        if not redis_client.exists(cache_key):
+            dedup_keys = None
+        else:
+            dedup_keys = json.loads(redis_client.get(name=cache_key))
+
+        if "existing_ids" in params:
+            if params["existing_ids"] and dedup_keys:
+                dedup_keys.extend(params["existing_ids"])
+            elif params["existing_ids"]:
+                dedup_keys = params["existing_ids"]
+            del params["existing_ids"]
+
+        if "deduplication_key" in params:
+            if (
+                params["deduplication_key"] != self.dedup_key
+                and self.dedup_key is not None
+                and params["deduplication_key"] is not None
+            ):
+
+                raise ValueError("Deduplication key in params is not equal to deduplication key in config")
+            if self.dedup_key is not None:
+                del params["deduplication_key"]
+            else:
+                self.dedup_key = params["deduplication_key"]
+                del params["deduplication_key"]
+
+        result = await self.data.get_data(
+            methods_dict=methods_dict,
+            user_id=user_id,
+            limit=limit,
+            next_page=next_page,
+            existing_ids=dedup_keys,
+            deduplication_key=self.dedup_key,
+            **params,
+        )
+
+        data = result.data
+        if self.deduplicate:
+            data = self._dedup_data(data)
+        if dedup_keys is None:
+            dedup_keys = self._get_dedup_keys(data)
+        else:
+            dedup_keys.extend(self._get_dedup_keys(data))
+        dedup_keys = list(set(dedup_keys))
+        redis_client.set(name=cache_key, value=json.dumps(dedup_keys), ex=self.session_live_time)
+
+        return result
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,  # pylint: disable=unused-argument
+        deduplication_key: Optional[str] = None,  # pylint: disable=unused-argument
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных методом append.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
+        :param params: для метода класса.
+        :return: список данных методом append.
+        """
+
+        # Проверяем наличие клиента Redis в конфигурации фида.
+        if not redis_client:
+            raise ValueError("Redis client must be provided if using Merger View Session")
+
+        # Формируем результат view session мерджера.
+        if isinstance(redis_client, (AsyncRedis, AsyncRedisCluster)):
+            result = await self._get_data_async(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                **params,
+            )
+        else:
+            result = await self._get_data(
                 methods_dict=methods_dict,
                 user_id=user_id,
                 limit=limit,
@@ -387,6 +661,8 @@ class MergerAppend(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -413,6 +689,8 @@ class MergerAppend(BaseFeedConfigModel):
                 limit=result_limit,
                 next_page=next_page,
                 redis_client=redis_client,
+                existing_ids=existing_ids,
+                deduplication_key=deduplication_key,
                 **params,
             )
 
@@ -483,6 +761,8 @@ class MergerPositional(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -504,6 +784,8 @@ class MergerPositional(BaseFeedConfigModel):
             limit=limit,
             next_page=next_page,
             redis_client=redis_client,
+            existing_ids=existing_ids,
+            deduplication_key=deduplication_key,
             **params,
         )
 
@@ -535,7 +817,6 @@ class MergerPositional(BaseFeedConfigModel):
         # Если конечная позиция текущей страницы больше или равна MAX позиции в конфигурации, то has_next_page = False
         if max(available_positions) >= max(self.positions, default=0):
             positional_has_next_page = False
-
         if self.start is not None and self.end is not None and self.step is not None:
             # Если конечная позиция текущей страницы больше или равна конечной шаговой позиции, то has_next_page = False
             positional_has_next_page = not max(available_positions) >= self.end
@@ -551,9 +832,10 @@ class MergerPositional(BaseFeedConfigModel):
             limit=len(page_positions),
             next_page=next_page,
             redis_client=redis_client,
+            existing_ids=existing_ids,
+            deduplication_key=deduplication_key,
             **params,
         )
-
         # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
         if not result.has_next_page and all([positional_has_next_page, pos_res.has_next_page]):
             result.has_next_page = True
@@ -649,6 +931,8 @@ class MergerPercentage(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -675,6 +959,8 @@ class MergerPercentage(BaseFeedConfigModel):
                 limit=limit * item.percentage // 100,
                 next_page=next_page,
                 redis_client=redis_client,
+                existing_ids=existing_ids,
+                deduplication_key=deduplication_key,
                 **params,
             )
 
@@ -690,7 +976,6 @@ class MergerPercentage(BaseFeedConfigModel):
 
         # Добавляем данные позиции к общему результату процентного мерджера.
         result.data = await self._merge_items_data(items_data=items_data)
-
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:
             shuffle(result.data)
@@ -792,6 +1077,8 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -833,6 +1120,8 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             limit=limits_and_percents["limit_from"],
             next_page=next_page,
             redis_client=redis_client,
+            existing_ids=existing_ids,
+            deduplication_key=deduplication_key,
             **params,
         )
         item_to = await self.item_to.data.get_data(
@@ -841,6 +1130,8 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             limit=limits_and_percents["limit_to"],
             next_page=next_page,
             redis_client=redis_client,
+            existing_ids=existing_ids,
+            deduplication_key=deduplication_key,
             **params,
         )
 
@@ -896,6 +1187,41 @@ class SubFeed(BaseFeedConfigModel):
     raise_error: Optional[bool] = True
     shuffle: bool = False
 
+    @staticmethod
+    def _get_dedup_key_or_attr(item: Any, dedup_key) -> str:
+        """
+        Метод для получения ключа объекта кешируемой сессии.
+
+        Если указанное в конфиге сессии название ключа имеет значение None,
+        в качестве ключа вернется сам объект.
+        Если название ключа не None, и для одного из объектов ни найден ни ключ, ни атрибут,
+        метод выбросит AssertionError.
+
+        :param item: объект, для которого нужен ключ.
+        :return:  ключ объекта.
+        """
+
+        if not dedup_key:
+            return item
+
+        try:
+            dedup_value = item.get(dedup_key)
+        except AttributeError:
+            dedup_value = getattr(item, dedup_key, None)
+
+        assert dedup_value is not None, f"Deduplication failed: entity {item} has no key or attr {dedup_key}"
+        return dedup_value
+
+    def _dedup_data(self, data: List[Any], existing_ids, dedup_key) -> List[Any]:
+        """
+        Метод для удаления дублей в списке data с сохранением последовательности.
+
+        :param data: список, в котором нужно удалить дубли.
+        :return: результат удаления дублей.
+        """
+        deduplicated_data = [item for item in data if self._get_dedup_key_or_attr(item, dedup_key) not in existing_ids]
+        return deduplicated_data
+
     async def get_data(
         self,
         methods_dict: Dict[str, Callable],
@@ -903,6 +1229,8 @@ class SubFeed(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        existing_ids: Optional[List[str]] = None,
+        deduplication_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -916,51 +1244,85 @@ class SubFeed(BaseFeedConfigModel):
         :param params: параметры для метода.
         :return: список данных.
         """
-
-        # Формируем next_page конкретного субфида.
-        subfeed_next_page = FeedResultNextPageInside(
-            page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
-            after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
-        )
-
         # Формируем params для функции субфида.
+        method = methods_dict[self.method_name]
         method_args = inspect.getfullargspec(methods_dict[self.method_name]).args
         method_params: Dict[str, Any] = {}
         for arg in method_args:
             if arg in params:
                 method_params[arg] = params[arg]
 
-        # Получаем результат функции клиента в формате SubFeedResult.
-        try:
-            method_result = await methods_dict[self.method_name](
-                user_id=user_id,
-                limit=limit,
-                next_page=subfeed_next_page,
-                **method_params,
-                **self.subfeed_params,
+        async def _get_data_iteration(
+            user_id: Any,
+            limit: int,
+            next_page: FeedResultNextPage,
+            method: Callable,
+            method_params: Dict[str, Any],
+        ) -> FeedResultClient:
+            # Формируем next_page конкретного субфида.
+            subfeed_next_page = FeedResultNextPageInside(
+                page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
+                after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,
             )
-        except (Exception,) as _:
-            if self.raise_error:
-                raise
+            # Получаем результат функции клиента в формате SubFeedResult.
+            try:
+                method_result = await method(
+                    user_id=user_id,
+                    limit=limit,
+                    next_page=subfeed_next_page,
+                    **method_params,
+                    **self.subfeed_params,
+                )
+            except (Exception,) as _:
+                if self.raise_error:
+                    raise
 
-            method_result = FeedResultClient(
-                data=[],
-                next_page=subfeed_next_page,
-                has_next_page=False,
+                method_result = FeedResultClient(
+                    data=[],
+                    next_page=subfeed_next_page,
+                    has_next_page=False,
+                )
+            if not isinstance(method_result, FeedResultClient):
+                raise TypeError('SubFeed function must return "FeedResultClient" instance.')
+
+            # Если в конфигурации указано "смешать" данные.
+            if self.shuffle:
+                shuffle(method_result.data)
+
+            result = FeedResult(
+                data=method_result.data,
+                next_page=FeedResultNextPage(data={self.subfeed_id: method_result.next_page}),
+                has_next_page=method_result.has_next_page,
             )
+            return result
 
-        if not isinstance(method_result, FeedResultClient):
-            raise TypeError('SubFeed function must return "FeedResultClient" instance.')
-
-        # Если в конфигурации указано "смешать" данные.
-        if self.shuffle:
-            shuffle(method_result.data)
-
-        result = FeedResult(
-            data=method_result.data,
-            next_page=FeedResultNextPage(data={self.subfeed_id: method_result.next_page}),
-            has_next_page=method_result.has_next_page,
+        result = await _get_data_iteration(
+            user_id=user_id,
+            limit=limit,
+            next_page=next_page,
+            method=method,
+            method_params=method_params,
         )
+        if not existing_ids:
+            return result
+        old_session_len = len(result.data)
+        if deduplication_key:
+            result.data = self._dedup_data(result.data, existing_ids, deduplication_key)
+        else:
+            result.data = self._dedup_data(result.data, existing_ids, None)
+
+        while old_session_len > len(result.data) and result.has_next_page:
+            result_to_append = await _get_data_iteration(
+                user_id=user_id,
+                limit=limit - len(result.data),
+                next_page=result.next_page,
+                method=method,
+                method_params=method_params,
+            )
+            result.data.extend(result_to_append.data)
+            result.has_next_page = result_to_append.has_next_page
+            result.next_page = result_to_append.next_page
+            result.data = self._dedup_data(result.data, existing_ids, deduplication_key)
         return result
 
 
@@ -988,3 +1350,4 @@ MergerPercentageItem.update_forward_refs()
 MergerAppend.update_forward_refs()
 MergerPercentageGradient.update_forward_refs()
 MergerViewSession.update_forward_refs()
+MergerViewSessionPartial.update_forward_refs()
