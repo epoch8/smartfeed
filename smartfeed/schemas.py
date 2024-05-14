@@ -476,10 +476,10 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         # Формируем ключ для кэширования данных мерджера. В кеше хранятся только ключи дедупликации.
         cache_key = f"{self.merger_id}_{user_id}"
 
-        if not await redis_client.exists(cache_key):
+        if not await redis_client.exists(cache_key):  # type: ignore
             dedup_keys = None
         else:
-            dedup_keys = json.loads(await redis_client.get(name=cache_key))
+            dedup_keys = json.loads(await redis_client.get(name=cache_key))  # type: ignore
 
         if "existing_ids" in params:
             if params["existing_ids"] and dedup_keys:
@@ -519,8 +519,8 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         else:
             dedup_keys.extend(self._get_dedup_keys(data))
         dedup_keys = list(set(dedup_keys))
-        await redis_client.set(cache_key, json.dumps(dedup_keys))
-        await redis_client.expire(cache_key, self.session_live_time)
+        await redis_client.set(cache_key, json.dumps(dedup_keys))  # type: ignore
+        await redis_client.expire(cache_key, self.session_live_time)  # type: ignore
 
         return result
 
@@ -536,10 +536,10 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         # Формируем ключ для кэширования данных мерджера. В кеше хранятся только ключи дедупликации.
         cache_key = f"{self.merger_id}_{user_id}"
 
-        if not redis_client.exists(cache_key):
+        if not redis_client.exists(cache_key):  # type: ignore
             dedup_keys = None
         else:
-            dedup_keys = json.loads(redis_client.get(name=cache_key))
+            dedup_keys = json.loads(redis_client.get(name=cache_key))  # type: ignore
 
         if "existing_ids" in params:
             if params["existing_ids"] and dedup_keys:
@@ -580,7 +580,7 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         else:
             dedup_keys.extend(self._get_dedup_keys(data))
         dedup_keys = list(set(dedup_keys))
-        redis_client.set(name=cache_key, value=json.dumps(dedup_keys), ex=self.session_live_time)
+        redis_client.set(name=cache_key, value=json.dumps(dedup_keys), ex=self.session_live_time)  # type: ignore
 
         return result
 
@@ -1188,7 +1188,7 @@ class SubFeed(BaseFeedConfigModel):
     shuffle: bool = False
 
     @staticmethod
-    def _get_dedup_key_or_attr(item: Any, dedup_key) -> str:
+    def _get_dedup_key_or_attr(item: Any, dedup_key: Union[str, None]) -> str:
         """
         Метод для получения ключа объекта кешируемой сессии.
 
@@ -1212,7 +1212,7 @@ class SubFeed(BaseFeedConfigModel):
         assert dedup_value is not None, f"Deduplication failed: entity {item} has no key or attr {dedup_key}"
         return dedup_value
 
-    def _dedup_data(self, data: List[Any], existing_ids, dedup_key) -> List[Any]:
+    def _dedup_data(self, data: List[Any], existing_ids: List[Any], dedup_key: Union[str, None]) -> List[Any]:
         """
         Метод для удаления дублей в списке data с сохранением последовательности.
 
@@ -1258,7 +1258,7 @@ class SubFeed(BaseFeedConfigModel):
             next_page: FeedResultNextPage,
             method: Callable,
             method_params: Dict[str, Any],
-        ) -> FeedResultClient:
+        ) -> FeedResult:
             # Формируем next_page конкретного субфида.
             subfeed_next_page = FeedResultNextPageInside(
                 page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
