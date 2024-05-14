@@ -494,7 +494,6 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
                 and self.dedup_key is not None
                 and params["deduplication_key"] is not None
             ):
-
                 raise ValueError("Deduplication key in params is not equal to deduplication key in config")
             if self.dedup_key is not None:
                 del params["deduplication_key"]
@@ -554,7 +553,6 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
                 and self.dedup_key is not None
                 and params["deduplication_key"] is not None
             ):
-
                 raise ValueError("Deduplication key in params is not equal to deduplication key in config")
             if self.dedup_key is not None:
                 del params["deduplication_key"]
