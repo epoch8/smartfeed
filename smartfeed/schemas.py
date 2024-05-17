@@ -1,5 +1,5 @@
 # TODO: Refactor this module
-# pylint: disable=too-many-arguments, too-many-locals, too-many-lines
+# pylint: disable=too-many-arguments, too-many-locals, too-many-lines, too-many-branches
 
 import inspect
 import json
