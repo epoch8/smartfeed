@@ -517,7 +517,12 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
             dedup_keys = self._get_dedup_keys(data)
         else:
             dedup_keys.extend(self._get_dedup_keys(data))
-        dedup_keys = list(set(dedup_keys))
+        try:
+            dedup_keys = list(set(dedup_keys))
+        except TypeError as err:
+            raise TypeError(
+                f"""Dedup keys not hashable. Probably caused by missing dedup_key in config of {self.merger_id}."""
+            ) from err
         await redis_client.set(cache_key, json.dumps(dedup_keys))  # type: ignore
         await redis_client.expire(cache_key, self.session_live_time)  # type: ignore
 
@@ -577,7 +582,12 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
             dedup_keys = self._get_dedup_keys(data)
         else:
             dedup_keys.extend(self._get_dedup_keys(data))
-        dedup_keys = list(set(dedup_keys))
+        try:
+            dedup_keys = list(set(dedup_keys))
+        except TypeError as err:
+            raise TypeError(
+                f"""Dedup keys must be hashable. Probably caused by missing dedup_key in config of {self.merger_id}."""
+            ) from err
         redis_client.set(name=cache_key, value=json.dumps(dedup_keys), ex=self.session_live_time)  # type: ignore
 
         return result
