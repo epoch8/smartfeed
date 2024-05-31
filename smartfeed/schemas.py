@@ -236,6 +236,7 @@ class MergerViewSession(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: redis.Redis,
+        session_cache_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -247,12 +248,16 @@ class MergerViewSession(BaseFeedConfigModel):
         :param limit: лимит на выдачу данных.
         :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
         :param redis_client: объект клиента Redis.
+        :param session_cache_key: кастомный ключ сессии.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
         :return: результат получения данных согласно конфигурации фида.
         """
 
         # Формируем ключ для кэширования данных мерджера.
-        cache_key = f"{self.merger_id}_{user_id}"
+        if session_cache_key:
+            cache_key = f"{self.merger_id}_{user_id}_{session_cache_key}"
+        else:
+            cache_key = f"{self.merger_id}_{user_id}"
 
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
@@ -277,6 +282,7 @@ class MergerViewSession(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: AsyncRedis,
+        session_cache_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -288,12 +294,16 @@ class MergerViewSession(BaseFeedConfigModel):
         :param limit: лимит на выдачу данных.
         :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
         :param redis_client: объект клиента Redis.
+        :param session_cache_key: кастомный ключ сессии.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
         :return: результат получения данных согласно конфигурации фида.
         """
 
         # Формируем ключ для кэширования данных мерджера.
-        cache_key = f"{self.merger_id}_{user_id}"
+        if session_cache_key:
+            cache_key = f"{self.merger_id}_{user_id}_{session_cache_key}"
+        else:
+            cache_key = f"{self.merger_id}_{user_id}"
 
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:
@@ -319,6 +329,7 @@ class MergerViewSession(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        custom_view_session_key: Optional[str] = None,
         **params: Any,
     ) -> FeedResult:
         """
@@ -345,6 +356,7 @@ class MergerViewSession(BaseFeedConfigModel):
                 limit=limit,
                 next_page=next_page,
                 redis_client=redis_client,
+                session_cache_key=custom_view_session_key,
                 **params,
             )
         else:
@@ -354,6 +366,7 @@ class MergerViewSession(BaseFeedConfigModel):
                 limit=limit,
                 next_page=next_page,
                 redis_client=redis_client,
+                session_cache_key=custom_view_session_key,
                 **params,
             )
 
