@@ -54,6 +54,35 @@ async def test_merger_view_session(redis_client) -> None:
 
 @pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
 @pytest.mark.asyncio
+async def test_merger_view_session_custom_key(redis_client) -> None:
+    """
+    Тест для проверки получения данных из мерджера с кэшированием по ключу с кастомным постфиксом.
+    """
+
+    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    # Даем дополнительный параметр, который мерджер добавит в ключ кэша.
+    merger_vs_res = await merger_vs.get_data(
+        methods_dict=METHODS_DICT,
+        limit=10,
+        next_page=FeedResultNextPage(data={}),
+        user_id="x",
+        redis_client=redis_client,
+        custom_view_session_key="foo",
+    )
+    merger_vs_cache = redis_client.get(name="merger_view_session_example_x_foo")
+    # Для использования синхронной и асинхронной фикстуры в одном тесте проверяем метод get
+    if inspect.iscoroutine(merger_vs_cache):
+        merger_vs_cache = json.loads(await merger_vs_cache)
+    else:
+        merger_vs_cache = json.loads(merger_vs_cache)
+
+    assert merger_vs_res.data == ["x_1", "x_2", "x_3", "x_4", "x_5", "x_6", "x_7", "x_8", "x_9", "x_10"]
+    assert len(merger_vs_cache) == merger_vs.session_size
+    assert merger_vs_cache[:10] == merger_vs_res.data
+
+
+@pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
+@pytest.mark.asyncio
 async def test_merger_view_session_next_page(redis_client) -> None:
     """
     Тест для проверки получения данных следующей страницы из мерджера с кэшированием.
