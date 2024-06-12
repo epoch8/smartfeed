@@ -116,7 +116,7 @@ async def test_merger_view_session_partial_remove_seen_ids(redis_client) -> None
     merger_vsp_res = await merger_vsp.get_data(
         methods_dict=METHODS_DICT,
         limit=10,
-        next_page=FeedResultNextPage(data={}),
+        next_page=FeedResultNextPage(data={"merger_view_session_partial_example": FeedResultNextPageInside(page=1)}),
         user_id="x",
         redis_client=redis_client,
     )
