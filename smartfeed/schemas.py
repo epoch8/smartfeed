@@ -476,7 +476,7 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         # Формируем ключ для кэширования данных мерджера. В кеше хранятся только ключи дедупликации.
         cache_key = f"{self.merger_id}_{user_id}"
 
-        if not await redis_client.exists(cache_key):  # type: ignore
+        if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:  # type: ignore
             dedup_keys = None
         else:
             dedup_keys = json.loads(await redis_client.get(name=cache_key))  # type: ignore
@@ -501,6 +501,8 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
                 self.dedup_key = params["deduplication_key"]
                 del params["deduplication_key"]
 
+        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+
         result = await self.data.get_data(
             methods_dict=methods_dict,
             user_id=user_id,
@@ -510,6 +512,8 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
             deduplication_key=self.dedup_key,
             **params,
         )
+        result.next_page.data[self.merger_id] = FeedResultNextPageInside(page=page + 1, after=None)
+
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
@@ -540,7 +544,7 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         # Формируем ключ для кэширования данных мерджера. В кеше хранятся только ключи дедупликации.
         cache_key = f"{self.merger_id}_{user_id}"
 
-        if not redis_client.exists(cache_key):  # type: ignore
+        if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:  # type: ignore
             dedup_keys = None
         else:
             dedup_keys = json.loads(redis_client.get(name=cache_key))  # type: ignore
@@ -565,6 +569,8 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
                 self.dedup_key = params["deduplication_key"]
                 del params["deduplication_key"]
 
+        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+
         result = await self.data.get_data(
             methods_dict=methods_dict,
             user_id=user_id,
@@ -574,6 +580,7 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
             deduplication_key=self.dedup_key,
             **params,
         )
+        result.next_page.data[self.merger_id] = FeedResultNextPageInside(page=page + 1, after=None)
 
         data = result.data
         if self.deduplicate:
