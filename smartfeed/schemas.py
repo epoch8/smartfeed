@@ -517,6 +517,7 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
+            result.data = data
         if dedup_keys is None:
             dedup_keys = self._get_dedup_keys(data)
         else:
@@ -585,6 +586,7 @@ class MergerViewSessionPartial(BaseFeedConfigModel):
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
+            result.data = data
         if dedup_keys is None:
             dedup_keys = self._get_dedup_keys(data)
         else:

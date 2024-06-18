@@ -124,3 +124,16 @@ MERGER_VIEW_SESSION_PARTIAL_CONFIG = {
         "method_name": "followings",
     },
 }
+
+MERGER_VIEW_SESSION_PARTIAL_DUPS_CONFIG = {
+    "merger_id": "merger_view_session_partial_example",
+    "type": "merger_view_session_partial",
+    "deduplicate": True,
+    "session_size": 10,
+    "session_live_time": 300,
+    "data": {
+        "subfeed_id": "subfeed_merger_view_session_partial_example",
+        "type": "subfeed",
+        "method_name": "doubles",
+    },
+}

@@ -5,7 +5,7 @@ import pytest
 
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerViewSessionPartial
 from tests.fixtures.configs import METHODS_DICT
-from tests.fixtures.mergers import MERGER_VIEW_SESSION_PARTIAL_CONFIG
+from tests.fixtures.mergers import MERGER_VIEW_SESSION_PARTIAL_CONFIG, MERGER_VIEW_SESSION_PARTIAL_DUPS_CONFIG
 from tests.fixtures.redis import redis_client
 
 
@@ -130,3 +130,26 @@ async def test_merger_view_session_partial_remove_seen_ids(redis_client) -> None
     assert merger_vsp_res.data == ["x_2", "x_3", "x_4", "x_5", "x_6", "x_7", "x_8", "x_9", "x_10", "x_11"]
     assert len(merger_vsp_cache) == len(merger_vsp_res.data) + 1
     assert set(merger_vsp_cache) == set(["x_1"] + merger_vsp_res.data)
+
+
+@pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
+@pytest.mark.asyncio
+async def test_merger_view_session_deduplication(redis_client) -> None:
+    merger_vs = MergerViewSessionPartial.parse_obj(MERGER_VIEW_SESSION_PARTIAL_DUPS_CONFIG)
+    merger_vs_res = await merger_vs.get_data(
+        methods_dict=METHODS_DICT,
+        limit=10,
+        next_page=FeedResultNextPage(data={}),
+        user_id="x",
+        redis_client=redis_client,
+    )
+    merger_vs_cache = redis_client.get(name="merger_view_session_example_x")
+    # Для использования синхронной и асинхронной фикстуры в одном тесте проверяем метод get
+    if inspect.iscoroutine(merger_vs_cache):
+        merger_vs_cache = json.loads(await merger_vs_cache)
+    else:
+        merger_vs_cache = json.loads(merger_vs_cache)
+
+    assert merger_vs_res.data == [i for i in range(1, 11)]
+    assert len(merger_vs_cache) == merger_vs.session_size
+    assert merger_vs_cache[:10] == merger_vs_res.data
