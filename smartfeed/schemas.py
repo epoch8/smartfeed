@@ -1,6 +1,8 @@
+import heapq
 import inspect
 import json
 from abc import ABC, abstractmethod
+from collections import Counter, defaultdict
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -883,6 +885,107 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         return result
 
 
+class MergerAppendDistribute(BaseFeedConfigModel):
+    """
+    Модель мерджера, равномерно распределяющего данные по ключу.
+
+    Attributes:
+        merger_id           уникальный ID мерджера.
+        type                тип объекта - всегда "merger_distribute".
+        items               позиции мерджера.
+        distribution_key    ключ для распределения данных мерджера.
+    """
+
+    merger_id: str
+    type: Literal["merger_distribute"]
+    items: List[FeedTypes]
+    distribution_key: str
+
+    async def _uniform_distribute(self, data):
+        # Собрать записи с одинаковым ключом в словарь
+        profile_entries = defaultdict(list)
+        [profile_entries[entry[self.distribution_key]].append(entry) for entry in data]
+        profile_counts = {k: len(v) for k, v in profile_entries.items()}
+
+        # Собираем кучу в обратном порядке относительно количества записей для ключа
+        max_heap = [(-count, distribution_value) for distribution_value, count in profile_counts.items()]
+        heapq.heapify(max_heap)
+
+        result = []
+        prev_profile = None
+        prev_count = 0
+        while max_heap:
+            # Достаём из кучи запись, добавляем в финальную выдачу
+            # и если для текущего ключа ещё есть записи - возвращаем их в кучу
+            count, distribution_value = heapq.heappop(max_heap)
+            result.append(profile_entries[distribution_value].pop())
+            if prev_count < 0:
+                heapq.heappush(max_heap, (prev_count, prev_profile))
+
+            # Обновляем параметры для следующей итерации
+            prev_profile = distribution_value
+            prev_count = count + 1  # Decrease the count since we used one entry
+
+        return result
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных методом append.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
+        :param params: для метода класса.
+        :return: список данных методом append.
+        """
+
+        # Формируем результат append мерджера.
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+
+        result_limit = limit
+        for item in self.items:
+            # Получаем данные из позиции мерджера.
+            item_result = await item.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=result_limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                **params,
+            )
+
+            # Добавляем данные позиции к общему результату процентного мерджера.
+            result.data.extend(item_result.data)
+
+            # Обновляем result_limit
+            result_limit -= len(item_result.data)
+
+            # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
+            if not result.has_next_page and item_result.has_next_page:
+                result.has_next_page = True
+
+            # Обновляем next_page.
+            result.next_page.data.update(item_result.next_page.data)
+
+            # Если полученных данных хватает, то прерываем итерацию и возвращаем результат.
+            if result_limit <= 0:
+                break
+
+        # Распределяем данные равномерно по ключу.
+        result.data = await self._uniform_distribute(result.data)
+        return result
+
+
 class SubFeed(BaseFeedConfigModel):
     """
     Модель субфида.
@@ -992,5 +1095,6 @@ MergerPercentage.update_forward_refs()
 SubFeed.update_forward_refs()
 MergerPercentageItem.update_forward_refs()
 MergerAppend.update_forward_refs()
+MergerAppendDistribute.update_forward_refs()
 MergerPercentageGradient.update_forward_refs()
 MergerViewSession.update_forward_refs()
