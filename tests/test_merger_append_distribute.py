@@ -18,6 +18,7 @@ async def test_merger_disturbed_append() -> None:
         next_page=FeedResultNextPage(data={}),
         user_id="x",
     )
+    assert len(merger_distributed_res.data) == 20
     for i in range(len(merger_distributed_res.data) - 1):
         assert (
             merger_distributed_res.data[i][merger_distributed.distribution_key]

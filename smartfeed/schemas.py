@@ -2,9 +2,9 @@ import heapq
 import inspect
 import json
 from abc import ABC, abstractmethod
-from collections import Counter, defaultdict
+from collections import defaultdict
 from random import shuffle
-from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union, no_type_check
 
 import redis
 from pydantic import BaseModel, Field, root_validator
@@ -901,10 +901,11 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     items: List[FeedTypes]
     distribution_key: str
 
-    async def _uniform_distribute(self, data):
+    @no_type_check
+    async def _uniform_distribute(self, data: List) -> List:
         # Собрать записи с одинаковым ключом в словарь
         profile_entries = defaultdict(list)
-        [profile_entries[entry[self.distribution_key]].append(entry) for entry in data]
+        [profile_entries[entry[self.distribution_key]].append(entry) for entry in data]  # pylint: disable=W0106
         profile_counts = {k: len(v) for k, v in profile_entries.items()}
 
         # Собираем кучу в обратном порядке относительно количества записей для ключа
