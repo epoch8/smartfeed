@@ -14,6 +14,7 @@ from redis.asyncio import RedisCluster as AsyncRedisCluster
 FeedTypes = Annotated[
     Union[
         "MergerAppend",
+        "MergerAppendDistribute",
         "MergerPositional",
         "MergerPercentage",
         "MergerPercentageGradient",
