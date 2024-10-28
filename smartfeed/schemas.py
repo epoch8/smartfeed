@@ -2,7 +2,7 @@ import heapq
 import inspect
 import json
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import defaultdict, deque
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union, no_type_check
 
@@ -903,30 +903,37 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     distribution_key: str
 
     @no_type_check
-    async def _uniform_distribute(self, data: List) -> List:
-        # Собрать записи с одинаковым ключом в словарь
-        profile_entries = defaultdict(list)
-        [profile_entries[entry[self.distribution_key]].append(entry) for entry in data]  # pylint: disable=W0106
-        profile_counts = {k: len(v) for k, v in profile_entries.items()}
+    async def _uniform_distribute(self, data: list) -> list:
+        # Группируем записи по ключу (например, id)
+        grouped_entries = defaultdict(deque)
+        for entry in data:
+            grouped_entries[entry[self.distribution_key]].append(entry)
 
-        # Собираем кучу в обратном порядке относительно количества записей для ключа
-        max_heap = [(-count, distribution_value) for distribution_value, count in profile_counts.items()]
+        # Создаем кучу, чтобы сортировать по количеству записей (в убывающем порядке)
+        max_heap = [(-len(entries), key) for key, entries in grouped_entries.items()]
         heapq.heapify(max_heap)
 
         result = []
-        prev_profile = None
-        prev_count = 0
-        while max_heap:
-            # Достаём из кучи запись, добавляем в финальную выдачу
-            # и если для текущего ключа ещё есть записи - возвращаем их в кучу
-            count, distribution_value = heapq.heappop(max_heap)
-            result.append(profile_entries[distribution_value].pop())
-            if prev_count < 0:
-                heapq.heappush(max_heap, (prev_count, prev_profile))
+        prev_key = None  # Предыдущий ключ для чередования
 
-            # Обновляем параметры для следующей итерации
-            prev_profile = distribution_value
-            prev_count = count + 1  # Decrease the count since we used one entry
+        while max_heap:
+            temp = []
+
+            # Извлекаем ключи по одному, чтобы не повторять предыдущий ключ
+            while max_heap:
+                count, key = heapq.heappop(max_heap)
+                if key != prev_key or not max_heap:  # Разрешаем повтор только если нет других элементов
+                    result.append(grouped_entries[key].popleft())
+                    prev_key = key
+                    if grouped_entries[key]:
+                        temp.append((count + 1, key))  # Уменьшаем счетчик и возвращаем в кучу при наличии записей
+                    break
+
+                temp.append((count, key))
+
+            # Возвращаем оставшиеся элементы обратно в кучу
+            for item in temp:
+                heapq.heappush(max_heap, item)
 
         return result
 
