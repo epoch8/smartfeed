@@ -895,45 +895,40 @@ class MergerAppendDistribute(BaseFeedConfigModel):
         type                тип объекта - всегда "merger_distribute".
         items               позиции мерджера.
         distribution_key    ключ для распределения данных мерджера.
+        sorting_key         ключ сортировки.
+        sorting_desc        флаг сортировки по убыванию.
     """
 
     merger_id: str
     type: Literal["merger_distribute"]
     items: List[FeedTypes]
     distribution_key: str
-
+    sorting_key: Optional[str] = None
+    sorting_desc: bool = False
+    
     @no_type_check
     async def _uniform_distribute(self, data: list) -> list:
-        # Группируем записи по ключу (например, id)
+        # Сортируем записи глобально по `created_at` в порядке убывания
+        if self.sorting_key:
+            data = sorted(data, key=lambda x: x[self.sorting_key], reverse=self.sorting_desc)
+
+        # Группируем записи по `distribution_key`
         grouped_entries = defaultdict(deque)
         for entry in data:
             grouped_entries[entry[self.distribution_key]].append(entry)
-
-        # Создаем кучу, чтобы сортировать по количеству записей (в убывающем порядке)
-        max_heap = [(-len(entries), key) for key, entries in grouped_entries.items()]
-        heapq.heapify(max_heap)
-
         result = []
-        prev_key = None  # Предыдущий ключ для чередования
-
-        while max_heap:
-            temp = []
-
-            # Извлекаем ключи по одному, чтобы не повторять предыдущий ключ
-            while max_heap:
-                count, key = heapq.heappop(max_heap)
-                if key != prev_key or not max_heap:  # Разрешаем повтор только если нет других элементов
-                    result.append(grouped_entries[key].popleft())
-                    prev_key = key
-                    if grouped_entries[key]:
-                        temp.append((count + 1, key))  # Уменьшаем счетчик и возвращаем в кучу при наличии записей
-                    break
-
-                temp.append((count, key))
-
-            # Возвращаем оставшиеся элементы обратно в кучу
-            for item in temp:
-                heapq.heappush(max_heap, item)
+        prev_profile_id = None
+        while any(grouped_entries.values()):
+            for profile_id in list(grouped_entries.keys()):
+                if grouped_entries[profile_id]:
+                    # Если текущий `distribution_key` отличается от предыдущего или он последний, берем его
+                    if profile_id != prev_profile_id or len(grouped_entries) == 1:
+                        result.append(grouped_entries[profile_id].popleft())
+                        prev_profile_id = profile_id
+                    if not grouped_entries[profile_id]:  # Если записи закончились, удаляем ключ из группы
+                        del grouped_entries[profile_id]
+                else:
+                    del grouped_entries[profile_id]
 
         return result
 
