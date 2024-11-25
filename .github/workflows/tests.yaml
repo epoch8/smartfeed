@@ -42,5 +42,5 @@ jobs:
       
       - name: Make Test Cache
         run: |
-          docker-compose up -d sfredis
+          docker compose up -d sfredis
           poetry run make test_cache
