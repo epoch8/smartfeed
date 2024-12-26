@@ -1,24 +1,49 @@
 [tool.poetry]
-name = "smartfeed"
+name = "epoch8-smartfeed"
 version = "0.1.0"
 description = ""
 authors = ["Sultan Zakariya <sultik10@gmail.com>"]
 readme = "README.md"
+packages = [
+    { include = "smartfeed", from = "." }
+]
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = ">=3.9"
 pydantic = "^1.10.7"
-pylint-pydantic = "^0.1.8"
 redis = "^4.5.5"
 
 [tool.poetry.group.dev.dependencies]
 isort = "^5.12.0"
 black = "^23.3.0"
-pylint = "^2.17.4"
 mypy = "^1.3.0"
 pytest = "^7.3.1"
 pytest-asyncio = "^0.21.0"
 types-redis = "^4.5.5.2"
+
+[tool.black]
+line-length = 120
+target-version = ['py36', 'py37', 'py38', 'py39', 'py310']
+
+[tool.isort]
+line_length = 120
+profile = "black"
+
+[tool.mypy]
+ignore_missing_imports = false
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_return_any = false
+disallow_untyped_calls = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_optional = true
+disallow_any_expr = false
+python_version = "3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["tests.py", "test_*.py", "*_test.py"]
 
 [build-system]
 requires = ["poetry-core"]
