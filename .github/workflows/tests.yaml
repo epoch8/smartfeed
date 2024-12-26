@@ -18,6 +18,12 @@ jobs:
           - "3.12"
           - "3.13"
 
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+
     steps:
       - uses: actions/checkout@v3
 
@@ -38,9 +44,4 @@ jobs:
         run: poetry install --all-extras
 
       - name: Make Test
-        run: poetry run make test
-      
-      - name: Make Test Cache
-        run: |
-          docker-compose up -d sfredis
-          poetry run make test_cache
+        run: poetry run make test test_cache
