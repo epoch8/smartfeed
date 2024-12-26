@@ -3,6 +3,7 @@ name: Test
 on:
   push:
     paths:
+      - ".github/workflows/tests.yaml"
       - "smartfeed/**"
       - "pyproject.toml"
 
