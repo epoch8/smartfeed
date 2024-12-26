@@ -1,22 +1,21 @@
-name: Test
+name: Lint
 
 on:
   push:
     paths:
       - "smartfeed/**"
+      - "tests/**"
       - "pyproject.toml"
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version:
           # - "3.8"
-          - "3.9"
+          # - "3.9"
           - "3.10"
-          - "3.12"
-          - "3.13"
 
     steps:
       - uses: actions/checkout@v3
@@ -35,12 +34,13 @@ jobs:
           installer-parallel: true
 
       - name: Install dependencies
-        run: poetry install --all-extras
-
-      - name: Make Test
-        run: poetry run make test
-      
-      - name: Make Test Cache
         run: |
-          docker-compose up -d sfredis
-          poetry run make test_cache
+          poetry install --all-extras
+
+      - name: Lint with mypy
+        run: |
+          poetry run mypy smartfeed
+
+      - name: Lint with black
+        run: |
+          poetry run black --check smartfeed
