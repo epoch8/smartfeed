@@ -45,4 +45,4 @@ jobs:
         run: poetry install --all-extras
 
       - name: Make Test
-        run: poetry run make test test_cache
+        run: poetry run pytest
