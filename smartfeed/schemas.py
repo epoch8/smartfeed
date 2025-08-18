@@ -1,4 +1,3 @@
-import heapq
 import inspect
 import json
 from abc import ABC, abstractmethod
@@ -905,7 +904,7 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     distribution_key: str
     sorting_key: Optional[str] = None
     sorting_desc: bool = False
-    
+
     @no_type_check
     async def _uniform_distribute(self, data: list) -> list:
         # Сортируем записи глобально по `created_at` в порядке убывания
