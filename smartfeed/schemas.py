@@ -342,7 +342,7 @@ class MergerViewSession(BaseFeedConfigModel):
                 )
             else:
                 logging.info('Successfully read cached data for %s', cache_key)
-                session_data = json.loads(cached_data)  # type: ignore[arg-type]
+                session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
