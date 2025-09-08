@@ -1,4 +1,3 @@
-import heapq
 import inspect
 import json
 import logging
@@ -263,26 +262,29 @@ class MergerViewSession(BaseFeedConfigModel):
         else:
             cache_key = f"{self.merger_id}_{user_id}"
 
-        logging.info(f"MergerViewSession cache request for {cache_key}")
+        logging.info('MergerViewSession cache request for %s', cache_key)
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            logging.info(f"Cache miss or new session - generating fresh data for {cache_key}")
+            logging.info('Cache miss or new session - generating fresh data for %s', cache_key)
             # Получаем свежие данные и используем их напрямую (избегаем чтение из кэша)
             session_data = await self._set_cache(
                 methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
             )
         else:
-            logging.info(f"Cache exists - attempting read from Redis for {cache_key}")
+            logging.info('Cache exists - attempting read from Redis for %s', cache_key)
             # Читаем из кэша только если он уже существовал
             cached_data = redis_client.get(name=cache_key)
             if cached_data is None:
                 # Fallback: если кэш пропал, получаем свежие данные
-                logging.info(f"Redis returned None for {cache_key} - falling back to fresh data (cluster replication issue)")
+                logging.info(
+                    'Redis returned None for %s - falling back to fresh data (cluster replication issue)',
+                    cache_key
+                )
                 session_data = await self._set_cache(
                     methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
                 )
             else:
-                logging.info(f"Successfully read cached data for {cache_key}")
+                logging.info('Successfully read cached data for %s', cache_key)
                 session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
@@ -331,12 +333,15 @@ class MergerViewSession(BaseFeedConfigModel):
             cached_data = await redis_client.get(cache_key)
             if cached_data is None:
                 # Fallback: если кэш пропал, получаем свежие данные
-                logging.info(f"Redis returned None for {cache_key} - falling back to fresh data (cluster replication issue)")
+                logging.info(
+                    'Redis returned None for %s - falling back to fresh data (cluster replication issue)',
+                    cache_key
+                )
                 session_data = await self._set_cache_async(
                     methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
                 )
             else:
-                logging.info(f"Successfully read cached data for {cache_key}")
+                logging.info('Successfully read cached data for %s', cache_key)
                 session_data = json.loads(cached_data)  # type: ignore[arg-type]
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
@@ -930,7 +935,7 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     distribution_key: str
     sorting_key: Optional[str] = None
     sorting_desc: bool = False
-    
+
     @no_type_check
     async def _uniform_distribute(self, data: list) -> list:
         # Сортируем записи глобально по `created_at` в порядке убывания
