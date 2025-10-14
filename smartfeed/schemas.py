@@ -1,8 +1,10 @@
 import inspect
 import json
+import logging
 from abc import ABC, abstractmethod
+from collections import defaultdict, deque
 from random import shuffle
-from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union, no_type_check
 
 import redis
 from pydantic import BaseModel, Field, root_validator
@@ -12,6 +14,7 @@ from redis.asyncio import RedisCluster as AsyncRedisCluster
 FeedTypes = Annotated[
     Union[
         "MergerAppend",
+        "MergerAppendDistribute",
         "MergerPositional",
         "MergerPercentage",
         "MergerPercentageGradient",
@@ -171,7 +174,7 @@ class MergerViewSession(BaseFeedConfigModel):
         redis_client: redis.Redis,
         cache_key: str,
         **params: Any,
-    ) -> None:
+    ) -> List[Any]:
         """
         Метод для кэширования данных Merger View Session.
 
@@ -180,7 +183,7 @@ class MergerViewSession(BaseFeedConfigModel):
         :param redis_client: объект клиента Redis.
         :param cache_key: ключ для кэширования.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: None.
+        :return: обработанные данные, которые были записаны в кэш.
         """
 
         result = await self.data.get_data(
@@ -195,6 +198,7 @@ class MergerViewSession(BaseFeedConfigModel):
         if self.deduplicate:
             data = self._dedup_data(data)
         redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
+        return data
 
     async def _set_cache_async(
         self,
@@ -203,7 +207,7 @@ class MergerViewSession(BaseFeedConfigModel):
         redis_client: AsyncRedis,
         cache_key: str,
         **params: Any,
-    ) -> None:
+    ) -> List[Any]:
         """
         Метод для кэширования данных Merger View Session.
 
@@ -212,7 +216,7 @@ class MergerViewSession(BaseFeedConfigModel):
         :param redis_client: объект клиента Redis.
         :param cache_key: ключ для кэширования.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: None.
+        :return: обработанные данные, которые были записаны в кэш.
         """
 
         result = await self.data.get_data(
@@ -228,6 +232,7 @@ class MergerViewSession(BaseFeedConfigModel):
             data = self._dedup_data(data)
         await redis_client.set(cache_key, json.dumps(data))
         await redis_client.expire(cache_key, self.session_live_time)
+        return data
 
     async def _get_cache(
         self,
@@ -257,14 +262,29 @@ class MergerViewSession(BaseFeedConfigModel):
         else:
             cache_key = f"{self.merger_id}_{user_id}"
 
+        logging.info("MergerViewSession cache request for %s", cache_key)
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache(
+            logging.info("Cache miss or new session - generating fresh data for %s", cache_key)
+            # Получаем свежие данные и используем их напрямую (избегаем чтение из кэша)
+            session_data = await self._set_cache(
                 methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
             )
-
-        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = json.loads(redis_client.get(name=cache_key))  # type: ignore
+        else:
+            logging.info("Cache exists - attempting read from Redis for %s", cache_key)
+            # Читаем из кэша только если он уже существовал
+            cached_data = redis_client.get(name=cache_key)
+            if cached_data is None:
+                # Fallback: если кэш пропал, получаем свежие данные
+                logging.info(
+                    "Redis returned None for %s - falling back to fresh data (cluster replication issue)", cache_key
+                )
+                session_data = await self._set_cache(
+                    methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+                )
+            else:
+                logging.info("Successfully read cached data for %s", cache_key)
+                session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
@@ -303,13 +323,24 @@ class MergerViewSession(BaseFeedConfigModel):
 
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache_async(
+            # Получаем свежие данные и используем их напрямую (избегаем чтение из кэша)
+            session_data = await self._set_cache_async(
                 methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
             )
-
-        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = await redis_client.get(cache_key)
-        session_data = json.loads(session_data)  # type: ignore[arg-type]
+        else:
+            # Читаем из кэша только если он уже существовал
+            cached_data = await redis_client.get(cache_key)
+            if cached_data is None:
+                # Fallback: если кэш пропал, получаем свежие данные
+                logging.info(
+                    "Redis returned None for %s - falling back to fresh data (cluster replication issue)", cache_key
+                )
+                session_data = await self._set_cache_async(
+                    methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+                )
+            else:
+                logging.info("Successfully read cached data for %s", cache_key)
+                session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
@@ -883,6 +914,110 @@ class MergerPercentageGradient(BaseFeedConfigModel):
         return result
 
 
+class MergerAppendDistribute(BaseFeedConfigModel):
+    """
+    Модель мерджера, равномерно распределяющего данные по ключу.
+
+    Attributes:
+        merger_id           уникальный ID мерджера.
+        type                тип объекта - всегда "merger_distribute".
+        items               позиции мерджера.
+        distribution_key    ключ для распределения данных мерджера.
+        sorting_key         ключ сортировки.
+        sorting_desc        флаг сортировки по убыванию.
+    """
+
+    merger_id: str
+    type: Literal["merger_distribute"]
+    items: List[FeedTypes]
+    distribution_key: str
+    sorting_key: Optional[str] = None
+    sorting_desc: bool = False
+
+    @no_type_check
+    async def _uniform_distribute(self, data: list) -> list:
+        # Сортируем записи глобально по `created_at` в порядке убывания
+        if self.sorting_key:
+            data = sorted(data, key=lambda x: x[self.sorting_key], reverse=self.sorting_desc)
+
+        # Группируем записи по `distribution_key`
+        grouped_entries = defaultdict(deque)
+        for entry in data:
+            grouped_entries[entry[self.distribution_key]].append(entry)
+        result = []
+        prev_profile_id = None
+        while any(grouped_entries.values()):
+            for profile_id in list(grouped_entries.keys()):
+                if grouped_entries[profile_id]:
+                    # Если текущий `distribution_key` отличается от предыдущего или он последний, берем его
+                    if profile_id != prev_profile_id or len(grouped_entries) == 1:
+                        result.append(grouped_entries[profile_id].popleft())
+                        prev_profile_id = profile_id
+                    if not grouped_entries[profile_id]:  # Если записи закончились, удаляем ключ из группы
+                        del grouped_entries[profile_id]
+                else:
+                    del grouped_entries[profile_id]
+
+        return result
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        **params: Any,
+    ) -> FeedResult:
+        """
+        Метод для получения данных методом append.
+
+        :param methods_dict: словарь с используемыми методами.
+        :param user_id: ID объекта для получения данных (например, ID пользователя).
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param redis_client: объект клиента Redis (для конфигурации с view_session мерджером).
+        :param params: для метода класса.
+        :return: список данных методом append.
+        """
+
+        # Формируем результат append мерджера.
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+
+        result_limit = limit
+        for item in self.items:
+            # Получаем данные из позиции мерджера.
+            item_result = await item.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=result_limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                **params,
+            )
+
+            # Добавляем данные позиции к общему результату процентного мерджера.
+            result.data.extend(item_result.data)
+
+            # Обновляем result_limit
+            result_limit -= len(item_result.data)
+
+            # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
+            if not result.has_next_page and item_result.has_next_page:
+                result.has_next_page = True
+
+            # Обновляем next_page.
+            result.next_page.data.update(item_result.next_page.data)
+
+            # Если полученных данных хватает, то прерываем итерацию и возвращаем результат.
+            if result_limit <= 0:
+                break
+
+        # Распределяем данные равномерно по ключу.
+        result.data = await self._uniform_distribute(result.data)
+        return result
+
+
 class SubFeed(BaseFeedConfigModel):
     """
     Модель субфида.
@@ -992,5 +1127,6 @@ MergerPercentage.update_forward_refs()
 SubFeed.update_forward_refs()
 MergerPercentageItem.update_forward_refs()
 MergerAppend.update_forward_refs()
+MergerAppendDistribute.update_forward_refs()
 MergerPercentageGradient.update_forward_refs()
 MergerViewSession.update_forward_refs()
