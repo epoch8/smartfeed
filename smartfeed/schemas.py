@@ -1,5 +1,6 @@
 import inspect
 import json
+import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from random import shuffle
@@ -173,7 +174,7 @@ class MergerViewSession(BaseFeedConfigModel):
         redis_client: redis.Redis,
         cache_key: str,
         **params: Any,
-    ) -> None:
+    ) -> List[Any]:
         """
         Метод для кэширования данных Merger View Session.
 
@@ -182,7 +183,7 @@ class MergerViewSession(BaseFeedConfigModel):
         :param redis_client: объект клиента Redis.
         :param cache_key: ключ для кэширования.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: None.
+        :return: обработанные данные, которые были записаны в кэш.
         """
 
         result = await self.data.get_data(
@@ -197,6 +198,7 @@ class MergerViewSession(BaseFeedConfigModel):
         if self.deduplicate:
             data = self._dedup_data(data)
         redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
+        return data
 
     async def _set_cache_async(
         self,
@@ -205,7 +207,7 @@ class MergerViewSession(BaseFeedConfigModel):
         redis_client: AsyncRedis,
         cache_key: str,
         **params: Any,
-    ) -> None:
+    ) -> List[Any]:
         """
         Метод для кэширования данных Merger View Session.
 
@@ -214,7 +216,7 @@ class MergerViewSession(BaseFeedConfigModel):
         :param redis_client: объект клиента Redis.
         :param cache_key: ключ для кэширования.
         :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: None.
+        :return: обработанные данные, которые были записаны в кэш.
         """
 
         result = await self.data.get_data(
@@ -230,6 +232,7 @@ class MergerViewSession(BaseFeedConfigModel):
             data = self._dedup_data(data)
         await redis_client.set(cache_key, json.dumps(data))
         await redis_client.expire(cache_key, self.session_live_time)
+        return data
 
     async def _get_cache(
         self,
@@ -259,14 +262,29 @@ class MergerViewSession(BaseFeedConfigModel):
         else:
             cache_key = f"{self.merger_id}_{user_id}"
 
+        logging.info("MergerViewSession cache request for %s", cache_key)
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache(
+            logging.info("Cache miss or new session - generating fresh data for %s", cache_key)
+            # Получаем свежие данные и используем их напрямую (избегаем чтение из кэша)
+            session_data = await self._set_cache(
                 methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
             )
-
-        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = json.loads(redis_client.get(name=cache_key))  # type: ignore
+        else:
+            logging.info("Cache exists - attempting read from Redis for %s", cache_key)
+            # Читаем из кэша только если он уже существовал
+            cached_data = redis_client.get(name=cache_key)
+            if cached_data is None:
+                # Fallback: если кэш пропал, получаем свежие данные
+                logging.info(
+                    "Redis returned None for %s - falling back to fresh data (cluster replication issue)", cache_key
+                )
+                session_data = await self._set_cache(
+                    methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+                )
+            else:
+                logging.info("Successfully read cached data for %s", cache_key)
+                session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
@@ -305,13 +323,24 @@ class MergerViewSession(BaseFeedConfigModel):
 
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
         if not await redis_client.exists(cache_key) or self.merger_id not in next_page.data:
-            await self._set_cache_async(
+            # Получаем свежие данные и используем их напрямую (избегаем чтение из кэша)
+            session_data = await self._set_cache_async(
                 methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
             )
-
-        # Получаем и возвращаем данные по мерджеру из кэша согласно пагинации.
-        session_data = await redis_client.get(cache_key)
-        session_data = json.loads(session_data)  # type: ignore[arg-type]
+        else:
+            # Читаем из кэша только если он уже существовал
+            cached_data = await redis_client.get(cache_key)
+            if cached_data is None:
+                # Fallback: если кэш пропал, получаем свежие данные
+                logging.info(
+                    "Redis returned None for %s - falling back to fresh data (cluster replication issue)", cache_key
+                )
+                session_data = await self._set_cache_async(
+                    methods_dict=methods_dict, user_id=user_id, redis_client=redis_client, cache_key=cache_key, **params
+                )
+            else:
+                logging.info("Successfully read cached data for %s", cache_key)
+                session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         result = FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
