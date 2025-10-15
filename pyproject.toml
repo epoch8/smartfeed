@@ -10,7 +10,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.9"
-pydantic = "^1.10.7"
+pydantic = ">=1.10.7"
 redis = "^6.1.0"
 
 [tool.poetry.group.dev.dependencies]

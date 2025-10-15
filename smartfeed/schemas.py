@@ -501,7 +501,7 @@ class MergerPositional(BaseFeedConfigModel):
     positional: FeedTypes
     default: FeedTypes
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_merger_positional(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         if not values["positions"] and not all((values["start"], values["end"], values["step"])):
             raise ValueError('Either "positions" or "start", "end", and "step" must be provided')
@@ -757,7 +757,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     size_to_step: int
     shuffle: bool = False
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_merger_percentage_gradient(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         if values["step"] < 1 or values["step"] > 100:
             raise ValueError('"step" must be in range from 1 to 100')
