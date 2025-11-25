@@ -2,7 +2,9 @@
 name = "epoch8-smartfeed"
 version = "0.2.0"
 description = ""
-authors = ["Sultan Zakariya <sultik10@gmail.com>"]
+authors = [
+    "Epoch8 Team <team@epoch8.co>"
+]
 readme = "README.md"
 packages = [
     { include = "smartfeed", from = "." }
