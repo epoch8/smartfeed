@@ -18,6 +18,30 @@ MERGER_APPEND_CONFIG = {
     ],
 }
 
+MERGER_APPEND_DISTRIBUTE_CONFIG = {
+    "merger_id": "merger_distribute_example",
+    "type": "merger_distribute",
+    "distribution_key": "user_id",
+    "items": [
+        {
+            "subfeed_id": "subfeed_merger_distribute_example",
+            "type": "subfeed",
+            "method_name": "posted",
+            "subfeed_params": {
+                "limit_to_return": 25,
+            },
+        },
+        {
+            "subfeed_id": "subfeed_2_merger_distribute_example",
+            "type": "subfeed",
+            "method_name": "posted",
+            "subfeed_params": {
+                "limit_to_return": 45,
+            },
+        },
+    ],
+}
+
 MERGER_PERCENTAGE_CONFIG = {
     "merger_id": "merger_percentage_example",
     "type": "merger_percentage",
