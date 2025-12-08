@@ -9,6 +9,10 @@ METHODS_DICT: Dict[str, Callable] = {
     "error": ClientMixerClass().error_method,
     "doubles": ClientMixerClass().doubles_method,
     "posted": ClientMixerClass().keys_method,
+    "dedup_a": ClientMixerClass().dedup_method_a,
+    "dedup_b": ClientMixerClass().dedup_method_b,
+    "dedup_c": ClientMixerClass().dedup_method_c,
+    "dedup_no_overlap": ClientMixerClass().dedup_no_overlap_method,
 }
 
 PARSING_CONFIG_FIXTURE = {

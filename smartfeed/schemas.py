@@ -49,6 +49,23 @@ class FeedResultNextPage(BaseModel):
     data: Dict[str, FeedResultNextPageInside]
 
 
+class FeedResultItem(BaseModel):
+    """
+    Модель элемента данных с информацией об источнике для дедупликации.
+
+    Attributes:
+        item            сам элемент данных.
+        source_id       ID субфида-источника.
+        priority        приоритет субфида-источника.
+        position        позиция элемента в исходном списке субфида.
+    """
+
+    item: Any
+    source_id: str
+    priority: int
+    position: int
+
+
 class FeedResult(BaseModel):
     """
     Модель результата метода get_data() любой позиции / целого фида.
@@ -57,11 +74,13 @@ class FeedResult(BaseModel):
         data                список данных, возвращенных мерджером / субфидом.
         next_page           курсор пагинации.
         has_next_page       флаг наличия следующей страницы данных.
+        items_with_source   список элементов с информацией об источнике (для дедупликации).
     """
 
     data: List
     next_page: FeedResultNextPage
     has_next_page: bool
+    items_with_source: List[FeedResultItem] = []
 
 
 class FeedResultClient(BaseModel):
@@ -439,7 +458,7 @@ class MergerAppend(BaseFeedConfigModel):
         """
 
         # Формируем результат append мерджера.
-        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False, items_with_source=[])
 
         result_limit = limit
         for item in self.items:
@@ -455,6 +474,9 @@ class MergerAppend(BaseFeedConfigModel):
 
             # Добавляем данные позиции к общему результату процентного мерджера.
             result.data.extend(item_result.data)
+
+            # Собираем items_with_source от дочерних элементов.
+            result.items_with_source.extend(item_result.items_with_source)
 
             # Обновляем result_limit
             result_limit -= len(item_result.data)
@@ -556,6 +578,7 @@ class MergerPositional(BaseFeedConfigModel):
                 },
             ),
             has_next_page=default_res.has_next_page,
+            items_with_source=list(default_res.items_with_source),
         )
 
         # Получаем список позиций с учетом текущей страницы.
@@ -602,10 +625,21 @@ class MergerPositional(BaseFeedConfigModel):
         # Формируем общие данные позиционного мерджера.
         for i, post in enumerate(pos_res.data):
             result.data = result.data[: page_positions[i] - 1] + [post] + result.data[page_positions[i] - 1 :]
+            # Вставляем items_with_source на соответствующие позиции.
+            if i < len(pos_res.items_with_source):
+                insert_pos = page_positions[i] - 1
+                if insert_pos < 0:
+                    insert_pos = 0
+                result.items_with_source = (
+                    result.items_with_source[:insert_pos]
+                    + [pos_res.items_with_source[i]]
+                    + result.items_with_source[insert_pos:]
+                )
 
         # Проверка на возврат данных в количестве не более limit.
         if len(result.data) > limit:
             result.data = result.data[:limit]
+            result.items_with_source = result.items_with_source[:limit]
 
         # Обновляем страницу для курсора пагинации мерджера.
         result.next_page.data[self.merger_id].page += 1
@@ -701,9 +735,10 @@ class MergerPercentage(BaseFeedConfigModel):
         """
 
         # Формируем результат процентного мерджера.
-        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False, items_with_source=[])
 
         items_data: List = []
+        items_with_source_data: List[List[FeedResultItem]] = []
         for item in self.items:
             # Получаем данные из позиций процентного мерджера.
             item_result = await item.data.get_data(
@@ -717,6 +752,7 @@ class MergerPercentage(BaseFeedConfigModel):
 
             # Добавляем данные позиции в список данных позиций.
             items_data.append(item_result.data)
+            items_with_source_data.append(item_result.items_with_source)
 
             # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
             if not result.has_next_page and item_result.has_next_page:
@@ -727,6 +763,8 @@ class MergerPercentage(BaseFeedConfigModel):
 
         # Добавляем данные позиции к общему результату процентного мерджера.
         result.data = await self._merge_items_data(items_data=items_data)
+        # Мержим items_with_source таким же образом.
+        result.items_with_source = await self._merge_items_data(items_data=items_with_source_data)
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:
@@ -855,6 +893,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
                 },
             ),
             has_next_page=False,
+            items_with_source=[],
         )
 
         # Получаем список лимитов данных и соотношений согласно странице и градиенту.
@@ -883,6 +922,8 @@ class MergerPercentageGradient(BaseFeedConfigModel):
 
         from_start_index = 0
         to_start_index = 0
+        from_source_start_index = 0
+        to_source_start_index = 0
         for lp_data in limits_and_percents["percentages"]:
             # Высчитываем лимиты для каждой позиции исходя из процентного соотношения.
             from_end_index = (lp_data["limit"] * lp_data["from"] // 100) + from_start_index
@@ -892,9 +933,17 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             result.data.extend(item_from.data[from_start_index:from_end_index])
             result.data.extend(item_to.data[to_start_index:to_end_index])
 
+            # Добавляем items_with_source.
+            from_source_end_index = min(from_end_index, len(item_from.items_with_source))
+            to_source_end_index = min(to_end_index, len(item_to.items_with_source))
+            result.items_with_source.extend(item_from.items_with_source[from_source_start_index:from_source_end_index])
+            result.items_with_source.extend(item_to.items_with_source[to_source_start_index:to_source_end_index])
+
             # Обновляем стартовые индексы.
             from_start_index = from_end_index
             to_start_index = to_end_index
+            from_source_start_index = from_source_end_index
+            to_source_start_index = to_source_end_index
 
         # Обновляем next_page.
         result.next_page.data.update(item_from.next_page.data)
@@ -982,7 +1031,7 @@ class MergerAppendDistribute(BaseFeedConfigModel):
         """
 
         # Формируем результат append мерджера.
-        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False, items_with_source=[])
 
         result_limit = limit
         for item in self.items:
@@ -998,6 +1047,9 @@ class MergerAppendDistribute(BaseFeedConfigModel):
 
             # Добавляем данные позиции к общему результату процентного мерджера.
             result.data.extend(item_result.data)
+
+            # Собираем items_with_source от дочерних элементов.
+            result.items_with_source.extend(item_result.items_with_source)
 
             # Обновляем result_limit
             result_limit -= len(item_result.data)
@@ -1028,6 +1080,7 @@ class SubFeed(BaseFeedConfigModel):
         method_name     название клиентского метода для получения данных субфида.
         subfeed_params  статичные параметры для метода субфида.
         shuffle         флаг для перемешивания полученных данных мерджера.
+        priority        приоритет субфида для дедупликации (меньше = выше приоритет).
     """
 
     subfeed_id: str
@@ -1036,6 +1089,7 @@ class SubFeed(BaseFeedConfigModel):
     subfeed_params: Dict[str, Any] = {}
     raise_error: Optional[bool] = True
     shuffle: bool = False
+    priority: int = 0
 
     async def get_data(
         self,
@@ -1097,10 +1151,22 @@ class SubFeed(BaseFeedConfigModel):
         if self.shuffle:
             shuffle(method_result.data)
 
+        # Формируем items_with_source для дедупликации.
+        items_with_source = [
+            FeedResultItem(
+                item=item,
+                source_id=self.subfeed_id,
+                priority=self.priority,
+                position=i,
+            )
+            for i, item in enumerate(method_result.data)
+        ]
+
         result = FeedResult(
             data=method_result.data,
             next_page=FeedResultNextPage(data={self.subfeed_id: method_result.next_page}),
             has_next_page=method_result.has_next_page,
+            items_with_source=items_with_source,
         )
         return result
 
@@ -1115,10 +1181,16 @@ class FeedConfig(BaseModel):
         session_size        размер кэшируемого фида (limit получения данных для сохранения в кэш).
         session_live_time   срок хранения в кэше для кэшируемого фида (в секундах).
         feed                мерджер или субфид.
+        deduplicate         флаг дедупликации по приоритетам между субфидами.
+        dedup_key           ключ для идентификации дублей (атрибут или ключ словаря).
+        dedup_session_ttl   TTL для хранения seen_ids в Redis (в секундах).
     """
 
     version: str
     feed: FeedTypes
+    deduplicate: bool = False
+    dedup_key: Optional[str] = None
+    dedup_session_ttl: int = 300
 
 
 # Update Forward Refs
