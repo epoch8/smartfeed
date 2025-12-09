@@ -100,7 +100,8 @@ class FeedManager:
                     used_by_source[item.source_id] += 1
 
         # Сортируем результат по оригинальной позиции для сохранения порядка
-        result.sort(key=lambda x: (x.priority, x.position))
+        # result.sort(key=lambda x: (x.priority, x.position))
+        result.sort(key=lambda x: x.position)
 
         return result, dict(used_by_source)
 
