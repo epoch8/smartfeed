@@ -337,3 +337,76 @@ class ClientMixerClass:
 
         result = FeedResultClient(data=result_data, next_page=next_page, has_next_page=to_index < len(data))
         return result
+
+    @staticmethod
+    async def placeholder_tours(
+        user_id: str,
+        limit: int,
+        next_page: FeedResultNextPageInside,
+        limit_to_return: Optional[int] = None,
+    ) -> FeedResultClient:
+        """
+        Метод для получения placeholder туров (для позиционного мерджера).
+        Возвращает туры с id вида "placeholder_X".
+
+        :param user_id: ID профиля.
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param limit_to_return: ограничить кол-во результата.
+        :return: список placeholder туров.
+        """
+        # Генерируем placeholder туры
+        data = [{"id": f"placeholder_{i}", "type": "placeholder", "value": i} for i in range(1, 21)]
+
+        from_index = (next_page.page - 1) * limit
+        to_index = from_index + limit
+        result_data = data[from_index:to_index]
+
+        if isinstance(limit_to_return, int) and limit_to_return > 0:
+            result_data = result_data[:limit_to_return]
+
+        next_page.after = result_data[-1] if result_data else None
+        next_page.page += 1
+
+        result = FeedResultClient(data=result_data, next_page=next_page, has_next_page=to_index < len(data))
+        return result
+
+    @staticmethod
+    async def regular_tours(
+        user_id: str,
+        limit: int,
+        next_page: FeedResultNextPageInside,
+        limit_to_return: Optional[int] = None,
+    ) -> FeedResultClient:
+        """
+        Метод для получения обычных туров (для view session).
+        Возвращает туры с id вида "tour_X", некоторые из которых дублируются с placeholder.
+
+        :param user_id: ID профиля.
+        :param limit: кол-во элементов.
+        :param next_page: курсор пагинации.
+        :param limit_to_return: ограничить кол-во результата.
+        :return: список обычных туров с дублями.
+        """
+        # Генерируем обычные туры, включая дубли с placeholder
+        data = []
+        for i in range(1, 101):
+            if i <= 10:
+                # Первые 10 элементов - дубли с placeholder
+                data.append({"id": f"placeholder_{i}", "type": "regular", "value": i * 10})
+            else:
+                # Остальные - уникальные туры
+                data.append({"id": f"tour_{i}", "type": "regular", "value": i * 10})
+
+        from_index = (next_page.page - 1) * limit
+        to_index = from_index + limit
+        result_data = data[from_index:to_index]
+
+        if isinstance(limit_to_return, int) and limit_to_return > 0:
+            result_data = result_data[:limit_to_return]
+
+        next_page.after = result_data[-1] if result_data else None
+        next_page.page += 1
+
+        result = FeedResultClient(data=result_data, next_page=next_page, has_next_page=to_index < len(data))
+        return result

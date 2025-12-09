@@ -32,6 +32,7 @@ import pytest
 from smartfeed.manager import FeedManager
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside
 from tests.fixtures.configs import METHODS_DICT
+from tests.fixtures.redis import redis_client  # noqa: F401
 
 # ============================================================================
 # Простые кейсы
@@ -1258,3 +1259,98 @@ async def test_cursor_unused_subfeed_not_advanced() -> None:
         # Если элементы из B не использованы, page должен быть 1 или меньше
         # (в зависимости от реализации)
         assert cursor_b.page <= 2, "Cursor for unused subfeed should not advance much"
+
+
+@pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
+@pytest.mark.asyncio
+async def test_dedup_positional_with_view_session(redis_client) -> None:
+    """
+    Тест дедупликации с MergerPositional + MergerViewSession.
+
+    Конфигурация:
+    - MergerPositional с placeholder_tours на позициях [1, 3, 5, 7]
+    - MergerViewSession с regular_tours как default (session_size=200)
+    - placeholder_tours: возвращает {"id": "placeholder_1", ...}, {"id": "placeholder_2", ...}, ...
+    - regular_tours: первые 10 элементов дублируются с placeholder (id: "placeholder_1" до "placeholder_10")
+    - priority: placeholder_tours = 1 (высший), MergerViewSession = 0 (по умолчанию)
+
+    Ожидаемое поведение:
+    - MergerPositional сначала вставляет placeholder туры на позиции [1, 3, 5, 7]
+    - Затем заполняет остальные позиции из MergerViewSession
+    - Дедупликация удаляет дубли: так как placeholder_tours (priority=1) имеет более высокий приоритет,
+      элементы placeholder_1 до placeholder_10 из regular_tours будут удалены
+    - Но так как MergerViewSession уже закэшировал данные, он не может дозапросить новые элементы
+    - Поэтому в результате будут только placeholder элементы из positional и tour_11+ из regular_tours
+    - Страница будет заполнена до limit=15
+    """
+    config = {
+        "version": "1",
+        "deduplicate": True,
+        "dedup_key": "id",
+        "dedup_session_ttl": 300,
+        "feed": {
+            "merger_id": "serp_fast_main",
+            "type": "merger_positional",
+            "positions": [1, 3, 5, 7],
+            "positional": {
+                "subfeed_id": "placeholder_tours",
+                "type": "subfeed",
+                "method_name": "placeholder_tours",
+                "priority": 1,  # Высший приоритет
+                "subfeed_params": {},
+            },
+            "default": {
+                "merger_id": "serp_fast_session",
+                "type": "merger_view_session",
+                "session_size": 200,
+                "session_live_time": 300,
+                "data": {
+                    "subfeed_id": "regular_tours",
+                    "type": "subfeed",
+                    "method_name": "regular_tours",
+                    "priority": 3,  # Низший приоритет
+                    "subfeed_params": {},
+                },
+            },
+        },
+    }
+
+    manager = FeedManager(config=config, methods_dict=METHODS_DICT, redis_client=redis_client)
+    result = await manager.get_data(
+        user_id="test_user",
+        limit=15,
+        next_page=FeedResultNextPage(data={}),
+    )
+
+    # Проверяем что получили 15 элементов
+    assert len(result.data) == 15, f"Expected 15 items, got {len(result.data)}"
+
+    # Отладочный вывод
+    print("\n=== Результат ===")
+    for i, item in enumerate(result.data):
+        print(f"  [{i}] {item['id']} (type: {item['type']})")
+
+    # Проверяем что дубли удалены
+    all_ids = [item["id"] for item in result.data]
+
+    # Считаем сколько раз встречается каждый id
+    from collections import Counter
+
+    id_counts = Counter(all_ids)
+
+    # Проверяем что нет дублей
+    for item_id, count in id_counts.items():
+        assert count == 1, f"Item {item_id} appears {count} times, expected 1"
+
+    # Проверяем что результат содержит placeholder_1 до placeholder_10
+    # (так как они имеют priority=1 и должны вытеснить дубли из regular_tours)
+    # и tour_11 до tour_15 (уникальные элементы из regular_tours)
+    expected_ids = [f"placeholder_{i}" for i in range(1, 11)] + [f"tour_{i}" for i in range(11, 16)]
+    assert all_ids == expected_ids, f"Expected {expected_ids}, got {all_ids}"
+
+    # Проверяем что has_next_page = True (есть еще данные)
+    assert result.has_next_page is True
+
+    print(f"✅ Test passed! Got {len(result.data)} items")
+    print(f"   IDs: {all_ids[:10]}...")
+    print(f"   Deduplication worked correctly!")

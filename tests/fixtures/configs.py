@@ -13,6 +13,8 @@ METHODS_DICT: Dict[str, Callable] = {
     "dedup_b": ClientMixerClass().dedup_method_b,
     "dedup_c": ClientMixerClass().dedup_method_c,
     "dedup_no_overlap": ClientMixerClass().dedup_no_overlap_method,
+    "placeholder_tours": ClientMixerClass().placeholder_tours,
+    "regular_tours": ClientMixerClass().regular_tours,
 }
 
 PARSING_CONFIG_FIXTURE = {

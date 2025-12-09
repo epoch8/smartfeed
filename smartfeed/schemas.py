@@ -305,10 +305,25 @@ class MergerViewSession(BaseFeedConfigModel):
                 logging.info("Successfully read cached data for %s", cache_key)
                 session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+        page_data = session_data[(page - 1) * limit :][:limit]
+
+        # Заполняем items_with_source для совместимости с дедупликацией.
+        # MergerViewSession не имеет приоритетов, поэтому используем priority=0.
+        items_with_source = [
+            FeedResultItem(
+                item=item,
+                source_id=self.merger_id,
+                priority=0,
+                position=i,
+            )
+            for i, item in enumerate(page_data)
+        ]
+
         result = FeedResult(
-            data=session_data[(page - 1) * limit :][:limit],
+            data=page_data,
             next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
             has_next_page=bool(len(session_data) > limit * page),
+            items_with_source=items_with_source,
         )
         return result
 
@@ -361,10 +376,25 @@ class MergerViewSession(BaseFeedConfigModel):
                 logging.info("Successfully read cached data for %s", cache_key)
                 session_data = json.loads(cached_data)
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+        page_data = session_data[(page - 1) * limit :][:limit]
+
+        # Заполняем items_with_source для совместимости с дедупликацией.
+        # MergerViewSession не имеет приоритетов, поэтому используем priority=0.
+        items_with_source = [
+            FeedResultItem(
+                item=item,
+                source_id=self.merger_id,
+                priority=0,
+                position=i,
+            )
+            for i, item in enumerate(page_data)
+        ]
+
         result = FeedResult(
-            data=session_data[(page - 1) * limit :][:limit],
+            data=page_data,
             next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
             has_next_page=bool(len(session_data) > limit * page),
+            items_with_source=items_with_source,
         )
         return result
 
