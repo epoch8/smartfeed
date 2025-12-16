@@ -2,7 +2,7 @@ import pytest
 
 from smartfeed.manager import FeedManager
 from smartfeed.schemas import (
-    DeduplicationMerger,
+    MergerDeduplication,
     FeedConfig,
     MergerAppend,
     MergerPercentage,
@@ -53,7 +53,7 @@ async def test_parsing_config_deduplication_merger() -> None:
     feed_manager = FeedManager(config=PARSING_DEDUP_CONFIG_FIXTURE, methods_dict=METHODS_DICT)
 
     assert isinstance(feed_manager.feed_config, FeedConfig)
-    assert isinstance(feed_manager.feed_config.feed, DeduplicationMerger)
+    assert isinstance(feed_manager.feed_config.feed, MergerDeduplication)
     assert len(feed_manager.feed_config.feed.items) == 2
     assert feed_manager.feed_config.feed.items[0].priority == 100
     assert isinstance(feed_manager.feed_config.feed.items[0].data, SubFeed)

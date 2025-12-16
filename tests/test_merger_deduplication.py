@@ -3,7 +3,7 @@ import inspect
 import pytest
 
 from smartfeed.schemas import (
-    DeduplicationMerger,
+    MergerDeduplication,
     FeedResultClient,
     FeedResultNextPage,
     FeedResultNextPageInside,
@@ -71,7 +71,7 @@ async def test_deduplication_merger_cursor_priority_and_cross_page() -> None:
         ],
     }
 
-    merger = parse_model(DeduplicationMerger, config)
+    merger = parse_model(MergerDeduplication, config)
 
     res_1 = await merger.get_data(
         methods_dict=methods_dict,
@@ -139,7 +139,7 @@ async def test_deduplication_merger_refill_to_limit() -> None:
         ],
     }
 
-    merger = parse_model(DeduplicationMerger, config)
+    merger = parse_model(MergerDeduplication, config)
 
     res = await merger.get_data(
         methods_dict=methods_dict,
@@ -171,7 +171,7 @@ async def test_deduplication_merger_page_zero_resets_cursor_state() -> None:
         ],
     }
 
-    merger = parse_model(DeduplicationMerger, config)
+    merger = parse_model(MergerDeduplication, config)
 
     res_1 = await merger.get_data(
         methods_dict=methods_dict,
@@ -232,7 +232,7 @@ async def test_deduplication_merger_redis_backend(redis_client) -> None:
         ],
     }
 
-    merger = parse_model(DeduplicationMerger, config)
+    merger = parse_model(MergerDeduplication, config)
 
     res_1 = await merger.get_data(
         methods_dict=methods_dict,

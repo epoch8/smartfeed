@@ -15,7 +15,7 @@ from redis.asyncio import RedisCluster as AsyncRedisCluster
 
 FeedTypes = Annotated[
     Union[
-        "DeduplicationMerger",
+        "MergerDeduplication",
         "MergerAppend",
         "MergerAppendDistribute",
         "MergerPositional",
@@ -1021,14 +1021,14 @@ class MergerAppendDistribute(BaseFeedConfigModel):
         return result
 
 
-class DeduplicationMergerItem(BaseModel):
-    """Configuration item for DeduplicationMerger."""
+class MergerDeduplicationItem(BaseModel):
+    """Configuration item for MergerDeduplication."""
 
     priority: int = 0
     data: FeedTypes
 
 
-class DeduplicationMerger(BaseFeedConfigModel):
+class MergerDeduplication(BaseFeedConfigModel):
     """Merger that deduplicates items and refills to the requested limit.
 
     Key properties:
@@ -1039,7 +1039,7 @@ class DeduplicationMerger(BaseFeedConfigModel):
 
     merger_id: str
     type: Literal["merger_deduplication"]
-    items: List[DeduplicationMergerItem]
+    items: List[MergerDeduplicationItem]
 
     dedup_key: Optional[str] = None
     missing_key_policy: Literal["error", "keep", "drop"] = "error"
@@ -1151,7 +1151,7 @@ class DeduplicationMerger(BaseFeedConfigModel):
         is_fresh_session = requested_page is None or (isinstance(requested_page, int) and requested_page <= 0)
 
         if self.state_backend == "redis" and not redis_client:
-            raise ValueError("Redis client must be provided if using DeduplicationMerger with state_backend=redis")
+            raise ValueError("Redis client must be provided if using MergerDeduplication with state_backend=redis")
 
         if hasattr(next_page, "model_copy"):
             working_next_page = next_page.model_copy(deep=True)  # type: ignore[attr-defined]
@@ -1381,5 +1381,5 @@ _rebuild_model(MergerAppend)
 _rebuild_model(MergerAppendDistribute)
 _rebuild_model(MergerPercentageGradient)
 _rebuild_model(MergerViewSession)
-_rebuild_model(DeduplicationMergerItem)
-_rebuild_model(DeduplicationMerger)
+_rebuild_model(MergerDeduplicationItem)
+_rebuild_model(MergerDeduplication)
