@@ -1052,6 +1052,43 @@ class MergerDeduplication(BaseFeedConfigModel):
     overfetch_factor: int = 2
     max_refill_loops: int = 20
 
+    def _collect_descendant_cursor_keys(self, feed: BaseFeedConfigModel) -> set[str]:
+        keys: set[str] = set()
+
+        subfeed_id = getattr(feed, "subfeed_id", None)
+        if isinstance(subfeed_id, str) and subfeed_id:
+            keys.add(subfeed_id)
+
+        merger_id = getattr(feed, "merger_id", None)
+        if isinstance(merger_id, str) and merger_id:
+            keys.add(merger_id)
+
+        # Recurse into known child containers across existing feed types.
+        child: Any
+        for attr_name in ("data", "positional", "default"):
+            child = getattr(feed, attr_name, None)
+            if isinstance(child, BaseFeedConfigModel):
+                keys.update(self._collect_descendant_cursor_keys(child))
+
+        for attr_name in ("item_from", "item_to"):
+            child = getattr(feed, attr_name, None)
+            inner = getattr(child, "data", None)
+            if isinstance(inner, BaseFeedConfigModel):
+                keys.update(self._collect_descendant_cursor_keys(inner))
+
+        items = getattr(feed, "items", None)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, BaseFeedConfigModel):
+                    keys.update(self._collect_descendant_cursor_keys(item))
+                    continue
+
+                inner = getattr(item, "data", None)
+                if isinstance(inner, BaseFeedConfigModel):
+                    keys.update(self._collect_descendant_cursor_keys(inner))
+
+        return keys
+
     def _normalize_key(self, value: Any) -> str:
         if isinstance(value, (str, int)):
             return str(value)
@@ -1157,6 +1194,14 @@ class MergerDeduplication(BaseFeedConfigModel):
             working_next_page = next_page.model_copy(deep=True)  # type: ignore[attr-defined]
         else:
             working_next_page = next_page.copy(deep=True)
+
+        if is_fresh_session:
+            # Reset cursors for all descendants under this merger so upstream nodes also restart.
+            descendant_keys: set[str] = set()
+            for item in self.items:
+                descendant_keys.update(self._collect_descendant_cursor_keys(item.data))
+            for key in descendant_keys:
+                working_next_page.data.pop(key, None)
         sorted_items = sorted(self.items, key=lambda x: x.priority, reverse=True)
 
         seen_keys_in_order: List[str] = []
