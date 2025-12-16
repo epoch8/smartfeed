@@ -1413,12 +1413,14 @@ class MergerDeduplication(BaseFeedConfigModel):
 
                     remaining = limit - len(collected)
                     # Safe oversampling: only when we can rewind integer-offset cursors.
-                    can_overfetch = isinstance(next_page.after, (int, type(None)))
+                    # IMPORTANT: `after` can be many shapes (str/dict/etc) and may start as None.
+                    # We only enable overfetch when `after` is already an int offset.
+                    can_overfetch = isinstance(next_page.after, int)
                     request_limit = max(1, remaining)
                     if can_overfetch and self.overfetch_factor > 1:
                         request_limit = max(1, remaining * self.overfetch_factor)
 
-                    start_after = 0 if next_page.after is None else int(next_page.after)
+                    start_after: Optional[int] = int(next_page.after) if can_overfetch else None
 
                     method_result = await original_method(user_id=user_id, limit=request_limit, next_page=next_page, **kw)
                     if not isinstance(method_result, FeedResultClient):
@@ -1475,7 +1477,7 @@ class MergerDeduplication(BaseFeedConfigModel):
 
                     # If we oversampled with a simple integer cursor, rewind to the point we actually consumed.
                     # This prevents skipping un-inspected items that were fetched but not needed.
-                    if can_overfetch and request_limit > remaining:
+                    if can_overfetch and request_limit > remaining and start_after is not None:
                         end_after = next_page.after
                         if isinstance(end_after, int) and end_after == start_after + len(method_result.data):
                             next_page.after = start_after + consumed_in_batch

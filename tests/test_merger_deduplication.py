@@ -28,6 +28,100 @@ def make_offset_paged_method(items, *, max_per_call=None):
     return _method
 
 
+def make_string_after_paged_method(items, *, max_per_call=None, after_field="created_at"):
+    """A subfeed method whose cursor is a string (e.g. timestamp).
+
+    Cursor semantics: `after` is the last returned `created_at` value (monotonic).
+    """
+
+    async def _method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+        effective_limit = limit
+        if isinstance(max_per_call, int) and max_per_call > 0:
+            effective_limit = min(effective_limit, max_per_call)
+
+        after = next_page.after
+        start_idx = 0
+        if isinstance(after, str) and after:
+            # Find first item with created_at > after
+            for i, item in enumerate(items):
+                if str(item[after_field]) > after:
+                    start_idx = i
+                    break
+            else:
+                start_idx = len(items)
+
+        result_data = items[start_idx : start_idx + effective_limit]
+        has_next_page = (start_idx + len(result_data)) < len(items)
+
+        if result_data:
+            next_page.after = str(result_data[-1][after_field])
+        next_page.page += 1
+        return FeedResultClient(data=result_data, next_page=next_page, has_next_page=has_next_page)
+
+    return _method
+
+
+def make_profile_dict_after_method(
+    profiles_to_items,
+    *,
+    max_per_call=None,
+    after_key="after",
+):
+    """A subfeed method whose cursor is a dict of per-profile offsets.
+
+    Example shape: after = {"p1": 0, "p2": 0}
+    Cursor semantics: each profile offset increments as items are *read*.
+    """
+
+    profile_ids = list(profiles_to_items.keys())
+
+    async def _method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+        effective_limit = limit
+        if isinstance(max_per_call, int) and max_per_call > 0:
+            effective_limit = min(effective_limit, max_per_call)
+
+        after = next_page.after
+        if not isinstance(after, dict):
+            after = {pid: 0 for pid in profile_ids}
+        else:
+            after = dict(after)
+            for pid in profile_ids:
+                after.setdefault(pid, 0)
+
+        result = []
+        has_next_page = False
+
+        # Build a cyclic iteration over profiles.
+        active_profiles = [pid for pid in profile_ids]
+
+        i = 0
+        while active_profiles and len(result) < effective_limit:
+            pid = active_profiles[i % len(active_profiles)]
+            idx = after.get(pid, 0)
+            items = profiles_to_items.get(pid, [])
+
+            if idx >= len(items):
+                # This profile is exhausted.
+                active_profiles.remove(pid)
+                continue
+
+            result.append(items[idx])
+            after[pid] = idx + 1
+            i += 1
+
+        # Determine if any profile still has unread items.
+        for pid in profile_ids:
+            if after.get(pid, 0) < len(profiles_to_items.get(pid, [])):
+                has_next_page = True
+                break
+
+        next_page.after = after
+        next_page.page += 1
+        return FeedResultClient(data=result, next_page=next_page, has_next_page=has_next_page)
+
+    return _method
+
+
 def _assert_cursor_monotonic_if_present(res_1, res_2, keys):
     for key in keys:
         if key not in res_1.next_page.data:
@@ -717,6 +811,170 @@ async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf
     assert len(res_2.data) == 5
     _assert_no_dupes_in_page(res_2.data)
     _assert_pages_no_overlap(res_1, res_2)
+
+
+@pytest.mark.asyncio
+async def test_dedup_refill_loops_advance_dict_after_cursor_not_just_page() -> None:
+    """Dedup refill loops must correctly advance dict-shaped `after` cursors."""
+
+    # A produces ids 1,2.
+    a_items = [{"id": 1, "src": "A"}, {"id": 2, "src": "A"}]
+
+    # B produces ids 1.. in round-robin across profiles; cursor is per-profile offsets.
+    b_profiles = {
+        "p0": [{"id": 1, "src": "B"}, {"id": 3, "src": "B"}, {"id": 5, "src": "B"}, {"id": 7, "src": "B"}],
+        "p1": [{"id": 2, "src": "B"}, {"id": 4, "src": "B"}, {"id": 6, "src": "B"}, {"id": 8, "src": "B"}],
+    }
+
+    methods_dict = {
+        "a": make_offset_paged_method(a_items),
+        "b": make_profile_dict_after_method(b_profiles),
+    }
+
+    # Use a percentage merger so B is asked for a small limit (2 items for limit=4).
+    # This forces refill loops when B's first batch is all duplicates.
+    config = {
+        "merger_id": "dedup_dict_after",
+        "type": "merger_deduplication",
+        "dedup_key": "id",
+        "state_backend": "cursor",
+        "cursor_compress": True,
+        "max_refill_loops": 50,
+        "data": {
+            "merger_id": "pct_mix",
+            "type": "merger_percentage",
+            "shuffle": False,
+            "items": [
+                {
+                    "percentage": 50,
+                    "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a", "dedup_priority": 100},
+                },
+                {
+                    "percentage": 50,
+                    "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b", "dedup_priority": 0},
+                },
+            ],
+        },
+    }
+
+    merger = parse_model(MergerDeduplication, config)
+    res = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=4,
+        next_page=FeedResultNextPage(data={}),
+    )
+
+    assert len(res.data) == 4
+    _assert_no_dupes_in_page(res.data)
+    assert set(_ids(res.data)) == {1, 2, 3, 4}
+    assert "sf_b" in res.next_page.data
+    assert isinstance(res.next_page.data["sf_b"].after, dict)
+
+    # B contributed 2 items (3,4) but must have *read* 4 items (1..4) to skip duplicates.
+    b_after = res.next_page.data["sf_b"].after
+    read_count = sum(int(v) for v in b_after.values())
+    assert read_count == 4
+
+
+@pytest.mark.asyncio
+async def test_dedup_overfetch_does_not_overadvance_non_int_after_cursor() -> None:
+    """overfetch_factor must not cause over-advancement for non-rewindable cursors."""
+
+    # Single subfeed with dict after cursor; no dedup skips should happen.
+    profiles = {
+        "p0": [{"id": 1, "src": "B"}, {"id": 3, "src": "B"}, {"id": 5, "src": "B"}, {"id": 7, "src": "B"}],
+        "p1": [{"id": 2, "src": "B"}, {"id": 4, "src": "B"}, {"id": 6, "src": "B"}, {"id": 8, "src": "B"}],
+    }
+
+    methods_dict = {
+        "b": make_profile_dict_after_method(profiles),
+    }
+
+    config = {
+        "merger_id": "dedup_nonint_overfetch",
+        "type": "merger_deduplication",
+        "dedup_key": "id",
+        "state_backend": "cursor",
+        "cursor_compress": True,
+        "overfetch_factor": 5,
+        "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
+    }
+
+    merger = parse_model(MergerDeduplication, config)
+    res = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=4, next_page=FeedResultNextPage(data={}))
+
+    assert len(res.data) == 4
+    after = res.next_page.data["sf_b"].after
+    assert isinstance(after, dict)
+    # If overfetch were incorrectly applied, we'd see more than 4 reads.
+    assert sum(int(v) for v in after.values()) == 4
+
+
+@pytest.mark.asyncio
+async def test_dedup_overfetch_rewinds_offset_cursor_when_first_batch_all_duplicates() -> None:
+    """Overfetch should be safe: when we oversample, we must rewind offset cursors.
+
+    Scenario:
+    - A (high priority) returns ids 1..5
+    - B (low priority) initially returns only duplicates (1..5)
+    - On the next refill loop, B overfetches but must rewind `after` to inspected count
+      so it doesn't skip items.
+    """
+
+    items_a = [{"id": i, "src": "A"} for i in range(1, 300)]
+    items_b = [{"id": i, "src": "B"} for i in range(1, 300)]
+
+    methods_dict = {
+        "a": make_offset_paged_method(items_a),
+        "b": make_offset_paged_method(items_b),
+    }
+
+    config = {
+        "merger_id": "dedup_overfetch_rewind",
+        "type": "merger_deduplication",
+        "dedup_key": "id",
+        "state_backend": "cursor",
+        "cursor_compress": True,
+        "overfetch_factor": 3,
+        "max_refill_loops": 20,
+        "data": {
+            "merger_id": "pct_mix",
+            "type": "merger_percentage",
+            "shuffle": False,
+            "items": [
+                {
+                    "percentage": 50,
+                    "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a", "dedup_priority": 100},
+                },
+                {
+                    "percentage": 50,
+                    "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b", "dedup_priority": 0},
+                },
+            ],
+        },
+    }
+
+    merger = parse_model(MergerDeduplication, config)
+    res = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=10,
+        next_page=FeedResultNextPage(data={}),
+    )
+
+    assert len(res.data) == 10
+    _assert_no_dupes_in_page(res.data)
+
+    # A provides 1..5, B must provide 6..10.
+    winning = {item["id"]: item["src"] for item in res.data}
+    assert all(winning[i] == "A" for i in range(1, 6))
+    assert all(winning[i] == "B" for i in range(6, 11))
+
+    # Cursor rewind check:
+    # - First loop for B reads 5 duplicates -> after becomes 5
+    # - Second loop overfetches, but must rewind to inspected 5 more -> after should end at 10
+    assert res.next_page.data["sf_b"].after == 10
 
 
 @pytest.mark.asyncio
