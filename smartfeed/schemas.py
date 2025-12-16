@@ -87,6 +87,10 @@ class BaseFeedConfigModel(ABC, BaseModel):
     Абстрактный класс для мерджера / субфида конфигурации.
     """
 
+    # Higher value means the item should "win" deduplication when duplicates exist.
+    # This is primarily used by MergerDeduplication and by mergers when a dedup wrapper is active.
+    dedup_priority: int = 0
+
     @abstractmethod
     async def get_data(
         self,
@@ -441,37 +445,60 @@ class MergerAppend(BaseFeedConfigModel):
         :return: список данных методом append.
         """
 
-        # Формируем результат append мерджера.
+        # When a MergerDeduplication wrapper is active, we may need to respect dedup_priority
+        # across children without changing the append output order. In that mode we fetch in
+        # priority order, then concatenate in the configured order and trim to `limit`.
+        dedup_active = bool(params.pop("_sf_dedup_active", False))
+
         result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
-        result_limit = limit
-        for item in self.items:
-            # Получаем данные из позиции мерджера.
-            item_result = await item.get_data(
-                methods_dict=methods_dict,
-                user_id=user_id,
-                limit=result_limit,
-                next_page=next_page,
-                redis_client=redis_client,
-                **params,
-            )
+        if dedup_active:
+            indexed_items = list(enumerate(self.items))
+            fetch_order = sorted(indexed_items, key=lambda p: (getattr(p[1], "dedup_priority", 0), -p[0]), reverse=True)
+            fetched: Dict[int, FeedResult] = {}
 
-            # Добавляем данные позиции к общему результату процентного мерджера.
-            result.data.extend(item_result.data)
+            for idx, item in fetch_order:
+                fetched[idx] = await item.get_data(
+                    methods_dict=methods_dict,
+                    user_id=user_id,
+                    limit=limit,
+                    next_page=next_page,
+                    redis_client=redis_client,
+                    _sf_dedup_active=True,
+                    **params,
+                )
 
-            # Обновляем result_limit
-            result_limit -= len(item_result.data)
+            for idx, _item in indexed_items:
+                item_result = fetched[idx]
+                result.data.extend(item_result.data)
+                result.next_page.data.update(item_result.next_page.data)
+                if item_result.has_next_page:
+                    result.has_next_page = True
 
-            # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
-            if not result.has_next_page and item_result.has_next_page:
-                result.has_next_page = True
+            if len(result.data) > limit:
+                result.data = result.data[:limit]
+        else:
+            result_limit = limit
+            for item in self.items:
+                item_result = await item.get_data(
+                    methods_dict=methods_dict,
+                    user_id=user_id,
+                    limit=result_limit,
+                    next_page=next_page,
+                    redis_client=redis_client,
+                    **params,
+                )
 
-            # Обновляем next_page.
-            result.next_page.data.update(item_result.next_page.data)
+                result.data.extend(item_result.data)
+                result_limit -= len(item_result.data)
 
-            # Если полученных данных хватает, то прерываем итерацию и возвращаем результат.
-            if result_limit <= 0:
-                break
+                if not result.has_next_page and item_result.has_next_page:
+                    result.has_next_page = True
+
+                result.next_page.data.update(item_result.next_page.data)
+
+                if result_limit <= 0:
+                    break
 
         # Если в конфигурации указано "смешать" данные.
         if self.shuffle:
@@ -537,37 +564,14 @@ class MergerPositional(BaseFeedConfigModel):
         :return: список данных в процентном соотношении.
         """
 
-        # Получаем данные "default".
-        default_res = await self.default.get_data(
-            methods_dict=methods_dict,
-            user_id=user_id,
-            limit=limit,
-            next_page=next_page,
-            redis_client=redis_client,
-            **params,
-        )
+        dedup_active = bool(params.pop("_sf_dedup_active", False))
 
-        # Формируем результат позиционного мерджера.
-        result = FeedResult(
-            data=default_res.data,
-            next_page=FeedResultNextPage(
-                data={
-                    self.merger_id: FeedResultNextPageInside(
-                        page=next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1,
-                        after=next_page.data[self.merger_id].after if self.merger_id in next_page.data else None,
-                    )
-                },
-            ),
-            has_next_page=default_res.has_next_page,
-        )
+        # Determine the merger page first (independent of children).
+        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
 
-        # Получаем список позиций с учетом текущей страницы.
         positional_has_next_page = True
-        page_positions = []
-        available_positions = range(
-            (result.next_page.data[self.merger_id].page - 1) * limit,
-            (result.next_page.data[self.merger_id].page * limit) + 1,
-        )
+        page_positions: List[int] = []
+        available_positions = range((page - 1) * limit, (page * limit) + 1)
         for position in self.positions:
             if position in available_positions:
                 page_positions.append(available_positions.index(position))
@@ -584,14 +588,59 @@ class MergerPositional(BaseFeedConfigModel):
                 if position in available_positions:
                     page_positions.append(available_positions.index(position))
 
-        # Получаем данные "positional".
-        pos_res = await self.positional.get_data(
-            methods_dict=methods_dict,
-            user_id=user_id,
-            limit=len(page_positions),
-            next_page=next_page,
-            redis_client=redis_client,
-            **params,
+        default_res: FeedResult
+        pos_res: FeedResult
+
+        if dedup_active and getattr(self.positional, "dedup_priority", 0) > getattr(self.default, "dedup_priority", 0):
+            pos_res = await self.positional.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=len(page_positions),
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=True,
+                **params,
+            )
+            default_res = await self.default.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=True,
+                **params,
+            )
+        else:
+            default_res = await self.default.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limit,
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=dedup_active,
+                **params,
+            )
+            pos_res = await self.positional.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=len(page_positions),
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=dedup_active,
+                **params,
+            )
+
+        result = FeedResult(
+            data=default_res.data,
+            next_page=FeedResultNextPage(
+                data={
+                    self.merger_id: FeedResultNextPageInside(
+                        page=page,
+                        after=next_page.data[self.merger_id].after if self.merger_id in next_page.data else None,
+                    )
+                },
+            ),
+            has_next_page=default_res.has_next_page,
         )
 
         # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
@@ -706,26 +755,39 @@ class MergerPercentage(BaseFeedConfigModel):
         # Формируем результат процентного мерджера.
         result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
-        items_data: List = []
-        for item in self.items:
-            # Получаем данные из позиций процентного мерджера.
+        dedup_active = bool(params.pop("_sf_dedup_active", False))
+
+        items_data: List = [None] * len(self.items)
+        results: List[Optional[FeedResult]] = [None] * len(self.items)
+
+        indexed_items = list(enumerate(self.items))
+        fetch_order = indexed_items
+        if dedup_active:
+            fetch_order = sorted(
+                indexed_items,
+                key=lambda p: (getattr(p[1].data, "dedup_priority", 0), -p[0]),
+                reverse=True,
+            )
+
+        for idx, item in fetch_order:
             item_result = await item.data.get_data(
                 methods_dict=methods_dict,
                 user_id=user_id,
                 limit=limit * item.percentage // 100,
                 next_page=next_page,
                 redis_client=redis_client,
+                _sf_dedup_active=dedup_active,
                 **params,
             )
 
-            # Добавляем данные позиции в список данных позиций.
-            items_data.append(item_result.data)
+            results[idx] = item_result
 
-            # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
+        for idx, item_result in enumerate(results):
+            assert item_result is not None
+            items_data[idx] = item_result.data
+
             if not result.has_next_page and item_result.has_next_page:
                 result.has_next_page = True
-
-            # Обновляем next_page.
             result.next_page.data.update(item_result.next_page.data)
 
         # Добавляем данные позиции к общему результату процентного мерджера.
@@ -866,23 +928,49 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             limit=limit,
         )
 
-        # Получаем данные из позиций в процентном соотношений.
-        item_from = await self.item_from.data.get_data(
-            methods_dict=methods_dict,
-            user_id=user_id,
-            limit=limits_and_percents["limit_from"],
-            next_page=next_page,
-            redis_client=redis_client,
-            **params,
-        )
-        item_to = await self.item_to.data.get_data(
-            methods_dict=methods_dict,
-            user_id=user_id,
-            limit=limits_and_percents["limit_to"],
-            next_page=next_page,
-            redis_client=redis_client,
-            **params,
-        )
+        dedup_active = bool(params.pop("_sf_dedup_active", False))
+
+        from_priority = getattr(self.item_from.data, "dedup_priority", 0)
+        to_priority = getattr(self.item_to.data, "dedup_priority", 0)
+
+        if dedup_active and to_priority > from_priority:
+            item_to = await self.item_to.data.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limits_and_percents["limit_to"],
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=True,
+                **params,
+            )
+            item_from = await self.item_from.data.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limits_and_percents["limit_from"],
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=True,
+                **params,
+            )
+        else:
+            item_from = await self.item_from.data.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limits_and_percents["limit_from"],
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=dedup_active,
+                **params,
+            )
+            item_to = await self.item_to.data.get_data(
+                methods_dict=methods_dict,
+                user_id=user_id,
+                limit=limits_and_percents["limit_to"],
+                next_page=next_page,
+                redis_client=redis_client,
+                _sf_dedup_active=dedup_active,
+                **params,
+            )
 
         from_start_index = 0
         to_start_index = 0
@@ -984,62 +1072,75 @@ class MergerAppendDistribute(BaseFeedConfigModel):
         :return: список данных методом append.
         """
 
-        # Формируем результат append мерджера.
+        dedup_active = bool(params.pop("_sf_dedup_active", False))
+
         result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
 
-        result_limit = limit
-        for item in self.items:
-            # Получаем данные из позиции мерджера.
-            item_result = await item.get_data(
-                methods_dict=methods_dict,
-                user_id=user_id,
-                limit=result_limit,
-                next_page=next_page,
-                redis_client=redis_client,
-                **params,
-            )
+        if dedup_active:
+            indexed_items = list(enumerate(self.items))
+            fetch_order = sorted(indexed_items, key=lambda p: (getattr(p[1], "dedup_priority", 0), -p[0]), reverse=True)
+            fetched: Dict[int, FeedResult] = {}
 
-            # Добавляем данные позиции к общему результату процентного мерджера.
-            result.data.extend(item_result.data)
+            for idx, item in fetch_order:
+                fetched[idx] = await item.get_data(
+                    methods_dict=methods_dict,
+                    user_id=user_id,
+                    limit=limit,
+                    next_page=next_page,
+                    redis_client=redis_client,
+                    _sf_dedup_active=True,
+                    **params,
+                )
 
-            # Обновляем result_limit
-            result_limit -= len(item_result.data)
+            for idx, _item in indexed_items:
+                item_result = fetched[idx]
+                result.data.extend(item_result.data)
+                result.next_page.data.update(item_result.next_page.data)
+                if item_result.has_next_page:
+                    result.has_next_page = True
 
-            # Если has_next_page = False, то проверяем has_next_page у позиции и, если необходимо, обновляем.
-            if not result.has_next_page and item_result.has_next_page:
-                result.has_next_page = True
+            if len(result.data) > limit:
+                result.data = result.data[:limit]
+        else:
+            result_limit = limit
+            for item in self.items:
+                item_result = await item.get_data(
+                    methods_dict=methods_dict,
+                    user_id=user_id,
+                    limit=result_limit,
+                    next_page=next_page,
+                    redis_client=redis_client,
+                    **params,
+                )
 
-            # Обновляем next_page.
-            result.next_page.data.update(item_result.next_page.data)
+                result.data.extend(item_result.data)
+                result_limit -= len(item_result.data)
 
-            # Если полученных данных хватает, то прерываем итерацию и возвращаем результат.
-            if result_limit <= 0:
-                break
+                if not result.has_next_page and item_result.has_next_page:
+                    result.has_next_page = True
+
+                result.next_page.data.update(item_result.next_page.data)
+
+                if result_limit <= 0:
+                    break
 
         # Распределяем данные равномерно по ключу.
         result.data = await self._uniform_distribute(result.data)
         return result
 
 
-class MergerDeduplicationItem(BaseModel):
-    """Configuration item for MergerDeduplication."""
-
-    priority: int = 0
-    data: FeedTypes
-
-
 class MergerDeduplication(BaseFeedConfigModel):
-    """Merger that deduplicates items and refills to the requested limit.
+    """Merger that deduplicates while preserving child mixing/position semantics.
 
-    Key properties:
-    - Always tries to return exactly `limit` unique items if they exist upstream.
-    - Supports cross-page deduplication using either cursor state or Redis.
-    - Supports explicit per-source priority; higher priority wins on same dedup key.
+    This merger acts as a wrapper around exactly one child feed node.
+    Deduplication is applied at the leaf SubFeed method level with a shared seen-set.
+    This lets nested mergers (positional/percentage/gradient/etc.) keep their slot rules:
+    duplicates are skipped by fetching additional items from the *same* leaf source.
     """
 
     merger_id: str
     type: Literal["merger_deduplication"]
-    items: List[MergerDeduplicationItem]
+    data: FeedTypes
 
     dedup_key: Optional[str] = None
     missing_key_policy: Literal["error", "keep", "drop"] = "error"
@@ -1049,8 +1150,17 @@ class MergerDeduplication(BaseFeedConfigModel):
     cursor_compress: bool = True
     cursor_max_keys: Optional[int] = None
 
-    overfetch_factor: int = 2
+    overfetch_factor: int = 1
+
     max_refill_loops: int = 20
+
+    @model_validator(mode="after")
+    def validate_merger_deduplication(self) -> "MergerDeduplication":
+        if self.overfetch_factor < 1:
+            raise ValueError('"overfetch_factor" must be >= 1')
+        if self.max_refill_loops < 1:
+            raise ValueError('"max_refill_loops" must be >= 1')
+        return self
 
     def _collect_descendant_cursor_keys(self, feed: BaseFeedConfigModel) -> set[str]:
         keys: set[str] = set()
@@ -1111,53 +1221,68 @@ class MergerDeduplication(BaseFeedConfigModel):
             )
         return value
 
-    def _decode_seen_from_cursor(self, next_page: FeedResultNextPage) -> List[str]:
+    def _decode_seen_from_cursor(self, next_page: FeedResultNextPage) -> Dict[str, int]:
         entry = next_page.data.get(self.merger_id)
         if not entry or entry.after is None:
-            return []
+            return {}
 
         after = entry.after
         if isinstance(after, dict) and "z" in after:
             payload = base64.urlsafe_b64decode(after["z"].encode())
             raw = zlib.decompress(payload).decode()
-            return list(json.loads(raw))
+            decoded = json.loads(raw)
+            if isinstance(decoded, dict):
+                return {str(k): int(v) for k, v in decoded.items()}
+            if isinstance(decoded, list):
+                # v2: list of [key, priority] entries
+                seen_map: Dict[str, int] = {}
+                for entry_item in decoded:
+                    if isinstance(entry_item, (list, tuple)) and len(entry_item) == 2:
+                        seen_map[str(entry_item[0])] = int(entry_item[1])
+                    else:
+                        seen_map[str(entry_item)] = 0
+                return seen_map
+            return {}
         if isinstance(after, dict) and "seen" in after:
-            return list(after["seen"])
+            return {str(k): 0 for k in list(after["seen"])}
         if isinstance(after, list):
-            return list(after)
-        return []
+            return {str(k): 0 for k in list(after)}
+        if isinstance(after, dict):
+            # v2 uncompressed map
+            return {str(k): int(v) for k, v in after.items() if k not in {"v", "c", "n"}}
+        return {}
 
-    def _encode_seen_for_cursor(self, seen_keys_in_order: List[str]) -> Any:
+    def _encode_seen_for_cursor(self, seen_updates_in_order: List[tuple[str, int]]) -> Any:
         if self.cursor_max_keys is not None:
-            seen_keys_in_order = seen_keys_in_order[-self.cursor_max_keys :]
+            seen_updates_in_order = seen_updates_in_order[-self.cursor_max_keys :]
 
         if not self.cursor_compress:
-            return {"v": 1, "seen": seen_keys_in_order}
+            return {"v": 2, "seen": [[k, p] for k, p in seen_updates_in_order]}
 
-        raw = json.dumps(seen_keys_in_order).encode()
+        raw = json.dumps([[k, p] for k, p in seen_updates_in_order]).encode()
         compressed = zlib.compress(raw)
         return {
-            "v": 1,
+            "v": 2,
             "c": "zlib+base64",
-            "n": len(seen_keys_in_order),
+            "n": len(seen_updates_in_order),
             "z": base64.urlsafe_b64encode(compressed).decode(),
         }
 
-    async def _redis_sismember(self, redis_client: Union[redis.Redis, AsyncRedis], key: str, member: str) -> bool:
-        res = redis_client.sismember(key, member)
+    async def _redis_zscore(self, redis_client: Union[redis.Redis, AsyncRedis], key: str, member: str) -> Optional[float]:
+        res = redis_client.zscore(key, member)
         if inspect.iscoroutine(res):
             res = await res
-        return bool(res)
+        return None if res is None else float(res)
 
-    async def _redis_sadd_and_expire(
+    async def _redis_zadd_and_expire(
         self,
         redis_client: Union[redis.Redis, AsyncRedis],
         key: str,
-        members: List[str],
+        member_scores: Dict[str, int],
     ) -> None:
-        if not members:
+        if not member_scores:
             return
-        res = redis_client.sadd(key, *members)
+        res = redis_client.zadd(key, mapping={m: float(s) for m, s in member_scores.items()})
         if inspect.iscoroutine(res):
             await res
             await redis_client.expire(key, self.state_ttl_seconds)
@@ -1197,18 +1322,18 @@ class MergerDeduplication(BaseFeedConfigModel):
 
         if is_fresh_session:
             # Reset cursors for all descendants under this merger so upstream nodes also restart.
-            descendant_keys: set[str] = set()
-            for item in self.items:
-                descendant_keys.update(self._collect_descendant_cursor_keys(item.data))
+            descendant_keys = self._collect_descendant_cursor_keys(self.data)
             for key in descendant_keys:
                 working_next_page.data.pop(key, None)
-        sorted_items = sorted(self.items, key=lambda x: x.priority, reverse=True)
 
-        seen_keys_in_order: List[str] = []
-        seen_cursor_set: set[str] = set()
+        # Shared dedup state (cross-page)
+        seen_priority_map: Dict[str, int] = {}
+        seen_updates_in_order: List[tuple[str, int]] = []
         if self.state_backend == "cursor" and not is_fresh_session:
-            seen_keys_in_order = self._decode_seen_from_cursor(next_page)
-            seen_cursor_set = set(seen_keys_in_order)
+            seen_priority_map = self._decode_seen_from_cursor(next_page)
+
+        # Always maintain a per-request seen set to prevent duplicates within a single get_data() call.
+        seen_request_set: set[str] = set(seen_priority_map.keys())
 
         redis_state_key = ""
         if self.state_backend == "redis" and redis_client:
@@ -1219,92 +1344,175 @@ class MergerDeduplication(BaseFeedConfigModel):
                 if inspect.iscoroutine(deleted):
                     await deleted
 
-        result_items: List[Any] = []
-        accepted: Dict[str, Dict[str, Any]] = {}
-        redis_new_members: List[str] = []
-        any_has_next_page = False
+        redis_new_scores: Dict[str, int] = {}
 
-        loops = 0
-        while len(result_items) < limit and loops < self.max_refill_loops:
-            loops += 1
-            before_len = len(result_items)
+        # Preserve inner merger ordering/mixing semantics by deduplicating at the leaf method level
+        # with a shared seen-set.
+        original_methods_dict = methods_dict
 
-            for item in sorted_items:
-                remaining = limit - len(result_items)
-                if remaining <= 0:
-                    break
+        # Create a deep copy of the child tree and rewrite each SubFeed to call a unique wrapper
+        # so we can associate a dedup_priority with each leaf.
+        child = self.data
+        if hasattr(child, "model_copy"):
+            child = child.model_copy(deep=True)  # type: ignore[attr-defined]
+        else:
+            child = child.copy(deep=True)
 
-                request_limit = max(1, remaining * max(1, self.overfetch_factor))
-                item_result = await item.data.get_data(
-                    methods_dict=methods_dict,
-                    user_id=user_id,
-                    limit=request_limit,
-                    next_page=working_next_page,
-                    redis_client=redis_client,
-                    **params,
-                )
+        def iter_subfeeds(feed: BaseFeedConfigModel) -> List["SubFeed"]:
+            found: List[SubFeed] = []
 
-                any_has_next_page = any_has_next_page or item_result.has_next_page
-                working_next_page.data.update(item_result.next_page.data)
+            if isinstance(feed, SubFeed):
+                found.append(feed)
+                return found
 
-                for entity in item_result.data:
-                    raw_value = self._extract_dedup_value(entity)
-                    if raw_value is None:
-                        if self.missing_key_policy == "drop":
-                            continue
-                        if self.missing_key_policy == "keep":
-                            # Make a unique key per object instance representation.
-                            raw_value = ("__missing__", id(entity))
+            for attr_name in ("data", "positional", "default"):
+                inner = getattr(feed, attr_name, None)
+                if isinstance(inner, BaseFeedConfigModel):
+                    found.extend(iter_subfeeds(inner))
 
-                    key = self._normalize_key(raw_value)
+            for attr_name in ("item_from", "item_to"):
+                wrapper = getattr(feed, attr_name, None)
+                inner = getattr(wrapper, "data", None)
+                if isinstance(inner, BaseFeedConfigModel):
+                    found.extend(iter_subfeeds(inner))
 
-                    if key in accepted:
-                        if item.priority > accepted[key]["priority"]:
-                            result_items[accepted[key]["index"]] = entity
-                            accepted[key]["priority"] = item.priority
+            items = getattr(feed, "items", None)
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, BaseFeedConfigModel):
+                        found.extend(iter_subfeeds(item))
                         continue
+                    inner = getattr(item, "data", None)
+                    if isinstance(inner, BaseFeedConfigModel):
+                        found.extend(iter_subfeeds(inner))
 
-                    if self.state_backend == "cursor":
-                        if key in seen_cursor_set:
+            return found
+
+        rewritten_methods_dict = dict(original_methods_dict)
+
+        def wrap_leaf_method(*, subfeed: "SubFeed") -> None:
+            original_name = subfeed.method_name
+            original_method = original_methods_dict[original_name]
+            unique_name = f"__dedup__{self.merger_id}__{subfeed.subfeed_id}"
+            # Idempotency: if the same subfeed id appears multiple times, don't re-wrap.
+            if unique_name in rewritten_methods_dict:
+                subfeed.method_name = unique_name
+                return
+            subfeed.method_name = unique_name
+            leaf_priority = int(getattr(subfeed, "dedup_priority", 0))
+
+            async def _wrapped_method(user_id: Any, limit: int, next_page: FeedResultNextPageInside, **kw: Any):
+                collected: List[Any] = []
+                local_seen: set[str] = set()
+                any_has_next_page = False
+
+                loops = 0
+                while len(collected) < limit and loops < self.max_refill_loops:
+                    loops += 1
+                    before_len = len(collected)
+
+                    remaining = limit - len(collected)
+                    # Safe oversampling: only when we can rewind integer-offset cursors.
+                    can_overfetch = isinstance(next_page.after, (int, type(None)))
+                    request_limit = max(1, remaining)
+                    if can_overfetch and self.overfetch_factor > 1:
+                        request_limit = max(1, remaining * self.overfetch_factor)
+
+                    start_after = 0 if next_page.after is None else int(next_page.after)
+
+                    method_result = await original_method(user_id=user_id, limit=request_limit, next_page=next_page, **kw)
+                    if not isinstance(method_result, FeedResultClient):
+                        raise TypeError('SubFeed function must return "FeedResultClient" instance.')
+
+                    any_has_next_page = any_has_next_page or method_result.has_next_page
+
+                    consumed_in_batch = 0
+
+                    for entity in method_result.data:
+                        consumed_in_batch += 1
+                        raw_value = self._extract_dedup_value(entity)
+                        if raw_value is None:
+                            if self.missing_key_policy == "drop":
+                                continue
+                            if self.missing_key_policy == "keep":
+                                raw_value = ("__missing__", id(entity))
+
+                        key = self._normalize_key(raw_value)
+                        if key in local_seen:
                             continue
-                    else:
-                        assert redis_client is not None
-                        if await self._redis_sismember(redis_client, redis_state_key, key):
+
+                        if key in seen_request_set:
                             continue
 
-                    accepted[key] = {"priority": item.priority, "index": len(result_items)}
-                    result_items.append(entity)
+                        if self.state_backend == "cursor":
+                            existing_priority = seen_priority_map.get(key)
+                            if existing_priority is not None and leaf_priority <= existing_priority:
+                                continue
+                        else:
+                            assert redis_client is not None
+                            existing_score = await self._redis_zscore(redis_client, redis_state_key, key)
+                            if existing_score is not None and leaf_priority <= int(existing_score):
+                                continue
 
-                    if self.state_backend == "cursor":
-                        seen_cursor_set.add(key)
-                        seen_keys_in_order.append(key)
-                    else:
-                        redis_new_members.append(key)
+                        local_seen.add(key)
+                        collected.append(entity)
 
-                    if len(result_items) >= limit:
-                        break
+                        seen_request_set.add(key)
 
-                if len(result_items) >= limit:
-                    break
+                        if self.state_backend == "cursor":
+                            seen_priority_map[key] = leaf_priority
+                            seen_updates_in_order.append((key, leaf_priority))
+                        else:
+                            redis_new_scores[key] = max(redis_new_scores.get(key, 0), leaf_priority)
 
-            if len(result_items) == before_len:
-                break
+                        if len(collected) >= limit:
+                            break
+
+                    if len(collected) == before_len:
+                        # No progress this loop. Stop if upstream is exhausted.
+                        if not method_result.has_next_page:
+                            break
+
+                    # If we oversampled with a simple integer cursor, rewind to the point we actually consumed.
+                    # This prevents skipping un-inspected items that were fetched but not needed.
+                    if can_overfetch and request_limit > remaining:
+                        end_after = next_page.after
+                        if isinstance(end_after, int) and end_after == start_after + len(method_result.data):
+                            next_page.after = start_after + consumed_in_batch
+
+                return FeedResultClient(data=collected, next_page=next_page, has_next_page=any_has_next_page)
+
+            setattr(_wrapped_method, "_smartfeed_original", original_method)
+            rewritten_methods_dict[unique_name] = _wrapped_method
+
+        for sf in iter_subfeeds(child):
+            wrap_leaf_method(subfeed=sf)
+
+        child_result = await child.get_data(
+            methods_dict=rewritten_methods_dict,
+            user_id=user_id,
+            limit=limit,
+            next_page=working_next_page,
+            redis_client=redis_client,
+            _sf_dedup_active=True,
+            **params,
+        )
 
         if self.state_backend == "redis" and redis_client:
-            await self._redis_sadd_and_expire(redis_client, redis_state_key, redis_new_members)
+            await self._redis_zadd_and_expire(redis_client, redis_state_key, redis_new_scores)
 
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
         merger_after: Any = None
         if self.state_backend == "cursor":
-            merger_after = self._encode_seen_for_cursor(seen_keys_in_order)
+            merger_after = self._encode_seen_for_cursor(seen_updates_in_order)
 
-        if hasattr(working_next_page, "model_copy"):
-            result_next_page = working_next_page.model_copy(deep=True)  # type: ignore[attr-defined]
+        if hasattr(child_result.next_page, "model_copy"):
+            result_next_page = child_result.next_page.model_copy(deep=True)  # type: ignore[attr-defined]
         else:
-            result_next_page = working_next_page.copy(deep=True)
+            result_next_page = child_result.next_page.copy(deep=True)
         result_next_page.data[self.merger_id] = FeedResultNextPageInside(page=page + 1, after=merger_after)
 
-        return FeedResult(data=result_items, next_page=result_next_page, has_next_page=any_has_next_page)
+        return FeedResult(data=child_result.data, next_page=result_next_page, has_next_page=child_result.has_next_page)
 
 
 class SubFeed(BaseFeedConfigModel):
@@ -1354,7 +1562,9 @@ class SubFeed(BaseFeedConfigModel):
         )
 
         # Формируем params для функции субфида.
-        method_args = inspect.getfullargspec(methods_dict[self.method_name]).args
+        method = methods_dict[self.method_name]
+        method_spec = getattr(method, "_smartfeed_original", method)
+        method_args = inspect.getfullargspec(method_spec).args
         method_params: Dict[str, Any] = {}
         for arg in method_args:
             if arg in params:
@@ -1426,5 +1636,4 @@ _rebuild_model(MergerAppend)
 _rebuild_model(MergerAppendDistribute)
 _rebuild_model(MergerPercentageGradient)
 _rebuild_model(MergerViewSession)
-_rebuild_model(MergerDeduplicationItem)
 _rebuild_model(MergerDeduplication)

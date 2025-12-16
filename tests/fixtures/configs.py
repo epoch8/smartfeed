@@ -96,23 +96,28 @@ PARSING_DEDUP_CONFIG_FIXTURE = {
         "dedup_key": "id",
         "state_backend": "cursor",
         "cursor_compress": True,
-        "items": [
-            {
-                "priority": 100,
-                "data": {
-                    "subfeed_id": "subfeed_dedup_priority_high",
-                    "type": "subfeed",
-                    "method_name": "posted",
+        "data": {
+            "merger_id": "merger_percentage_inside_dedup_parsing_example",
+            "type": "merger_percentage",
+            "shuffle": False,
+            "items": [
+                {
+                    "percentage": 50,
+                    "data": {
+                        "subfeed_id": "subfeed_dedup_a",
+                        "type": "subfeed",
+                        "method_name": "posted",
+                    },
                 },
-            },
-            {
-                "priority": 0,
-                "data": {
-                    "subfeed_id": "subfeed_dedup_priority_low",
-                    "type": "subfeed",
-                    "method_name": "posted",
+                {
+                    "percentage": 50,
+                    "data": {
+                        "subfeed_id": "subfeed_dedup_b",
+                        "type": "subfeed",
+                        "method_name": "posted",
+                    },
                 },
-            },
-        ],
+            ],
+        },
     },
 }

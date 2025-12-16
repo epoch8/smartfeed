@@ -54,6 +54,5 @@ async def test_parsing_config_deduplication_merger() -> None:
 
     assert isinstance(feed_manager.feed_config, FeedConfig)
     assert isinstance(feed_manager.feed_config.feed, MergerDeduplication)
-    assert len(feed_manager.feed_config.feed.items) == 2
-    assert feed_manager.feed_config.feed.items[0].priority == 100
-    assert isinstance(feed_manager.feed_config.feed.items[0].data, SubFeed)
+    # Deduplication merger is a wrapper around a single child feed.
+    assert isinstance(feed_manager.feed_config.feed.data, (MergerPercentage, SubFeed))
