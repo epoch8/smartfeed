@@ -2,7 +2,7 @@ import base64
 import json
 from typing import Optional, Union
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside
 
@@ -18,13 +18,16 @@ class TestClientRequest(BaseModel):
         base64.urlsafe_b64encode(json.dumps({"data": {}}).encode()).decode()
     )
 
-    class Config:
-        validate_all = True
+    model_config = ConfigDict(validate_default=True)
 
-    @validator("next_page")
+    @field_validator("next_page")
+    @classmethod
     def validate_next_page(cls, value: Union[str, FeedResultNextPage]) -> Union[str, FeedResultNextPage]:
         if isinstance(value, str):
-            return FeedResultNextPage.parse_obj(json.loads(base64.urlsafe_b64decode(value)))
+            payload = json.loads(base64.urlsafe_b64decode(value))
+            if hasattr(FeedResultNextPage, "model_validate"):
+                return FeedResultNextPage.model_validate(payload)  # type: ignore[attr-defined]
+            return FeedResultNextPage.parse_obj(payload)
         return value
 
 

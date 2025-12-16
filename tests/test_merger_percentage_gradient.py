@@ -3,6 +3,7 @@ import pytest
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerPercentageGradient
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_PERCENTAGE_GRADIENT_CONFIG
+from tests.utils import parse_model
 
 
 @pytest.mark.asyncio
@@ -11,7 +12,7 @@ async def test_merger_percentage_gradient() -> None:
     Тест для проверки получения данных из процентного мерджера с градиентом.
     """
 
-    merger_percentage_gradient = MergerPercentageGradient.parse_obj(MERGER_PERCENTAGE_GRADIENT_CONFIG)
+    merger_percentage_gradient = parse_model(MergerPercentageGradient, MERGER_PERCENTAGE_GRADIENT_CONFIG)
     merger_percentage_gradient_res = await merger_percentage_gradient.get_data(
         methods_dict=METHODS_DICT,
         limit=10,
@@ -44,7 +45,7 @@ async def test_merger_percentage_gradient_next_page() -> None:
     Тест для проверки получения данных из процентного мерджера с градиентом после изменения процента на другой странице.
     """
 
-    merger_percentage_gradient = MergerPercentageGradient.parse_obj(MERGER_PERCENTAGE_GRADIENT_CONFIG)
+    merger_percentage_gradient = parse_model(MergerPercentageGradient, MERGER_PERCENTAGE_GRADIENT_CONFIG)
     merger_percentage_gradient_res = await merger_percentage_gradient.get_data(
         methods_dict=METHODS_DICT,
         limit=10,

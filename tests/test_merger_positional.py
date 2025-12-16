@@ -3,6 +3,7 @@ import pytest
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerPositional
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_POSITIONAL_CONFIG
+from tests.utils import parse_model
 
 
 @pytest.mark.asyncio
@@ -11,7 +12,7 @@ async def test_merger_positional_with_positions() -> None:
     Тест для проверки получения данных из позиционного мерджера на основе позиций в конфигурации.
     """
 
-    merger_positional = MergerPositional.parse_obj(MERGER_POSITIONAL_CONFIG)
+    merger_positional = parse_model(MergerPositional, MERGER_POSITIONAL_CONFIG)
     merger_positional_res = await merger_positional.get_data(
         methods_dict=METHODS_DICT,
         limit=9,
@@ -33,7 +34,7 @@ async def test_merger_positional_with_step() -> None:
     Тест для проверки получения данных из позиционного мерджера на основе шагов в конфигурации.
     """
 
-    merger_positional = MergerPositional.parse_obj(MERGER_POSITIONAL_CONFIG)
+    merger_positional = parse_model(MergerPositional, MERGER_POSITIONAL_CONFIG)
     merger_positional_res = await merger_positional.get_data(
         methods_dict=METHODS_DICT,
         limit=10,
@@ -56,7 +57,7 @@ async def test_merger_positional_with_empty_default() -> None:
     Тест для проверки получения данных из позиционного мерджера на основе шагов в конфигурации.
     """
 
-    merger_positional = MergerPositional.parse_obj(MERGER_POSITIONAL_CONFIG)
+    merger_positional = parse_model(MergerPositional, MERGER_POSITIONAL_CONFIG)
     merger_positional.default.method_name = "empty"
     merger_positional_res = await merger_positional.get_data(
         methods_dict=METHODS_DICT,

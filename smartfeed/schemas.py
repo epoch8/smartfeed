@@ -1,18 +1,21 @@
+import base64
 import inspect
 import json
 import logging
+import zlib
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from random import shuffle
 from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union, no_type_check
 
 import redis
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, model_validator
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio import RedisCluster as AsyncRedisCluster
 
 FeedTypes = Annotated[
     Union[
+        "DeduplicationMerger",
         "MergerAppend",
         "MergerAppendDistribute",
         "MergerPositional",
@@ -501,17 +504,17 @@ class MergerPositional(BaseFeedConfigModel):
     positional: FeedTypes
     default: FeedTypes
 
-    @root_validator(skip_on_failure=True)
-    def validate_merger_positional(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        if not values["positions"] and not all((values["start"], values["end"], values["step"])):
+    @model_validator(mode="after")
+    def validate_merger_positional(self) -> "MergerPositional":
+        if not self.positions and not all((self.start, self.end, self.step)):
             raise ValueError('Either "positions" or "start", "end", and "step" must be provided')
-        if values["start"] and values["positions"]:
-            if isinstance(values["start"], int) and values["start"] <= max(values["positions"]):
+        if self.start and self.positions:
+            if isinstance(self.start, int) and self.start <= max(self.positions):
                 raise ValueError('"start" must be bigger than maximum value of "positions"')
-        if isinstance(values["start"], int) and isinstance(values["end"], int):
-            if values["end"] <= values["start"]:
+        if isinstance(self.start, int) and isinstance(self.end, int):
+            if self.end <= self.start:
                 raise ValueError('"end" must be bigger than "start"')
-        return values
+        return self
 
     async def get_data(
         self,
@@ -757,13 +760,13 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     size_to_step: int
     shuffle: bool = False
 
-    @root_validator(skip_on_failure=True)
-    def validate_merger_percentage_gradient(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        if values["step"] < 1 or values["step"] > 100:
+    @model_validator(mode="after")
+    def validate_merger_percentage_gradient(self) -> "MergerPercentageGradient":
+        if self.step < 1 or self.step > 100:
             raise ValueError('"step" must be in range from 1 to 100')
-        if values["size_to_step"] < 1:
+        if self.size_to_step < 1:
             raise ValueError('"size_to_step" must be bigger than 1')
-        return values
+        return self
 
     async def _calculate_limits_and_percents(self, page: int, limit: int) -> Dict:
         """
@@ -1018,6 +1021,247 @@ class MergerAppendDistribute(BaseFeedConfigModel):
         return result
 
 
+class DeduplicationMergerItem(BaseModel):
+    """Configuration item for DeduplicationMerger."""
+
+    priority: int = 0
+    data: FeedTypes
+
+
+class DeduplicationMerger(BaseFeedConfigModel):
+    """Merger that deduplicates items and refills to the requested limit.
+
+    Key properties:
+    - Always tries to return exactly `limit` unique items if they exist upstream.
+    - Supports cross-page deduplication using either cursor state or Redis.
+    - Supports explicit per-source priority; higher priority wins on same dedup key.
+    """
+
+    merger_id: str
+    type: Literal["merger_deduplication"]
+    items: List[DeduplicationMergerItem]
+
+    dedup_key: Optional[str] = None
+    missing_key_policy: Literal["error", "keep", "drop"] = "error"
+
+    state_backend: Literal["cursor", "redis"] = "cursor"
+    state_ttl_seconds: int = 3600
+    cursor_compress: bool = True
+    cursor_max_keys: Optional[int] = None
+
+    overfetch_factor: int = 2
+    max_refill_loops: int = 20
+
+    def _normalize_key(self, value: Any) -> str:
+        if isinstance(value, (str, int)):
+            return str(value)
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, sort_keys=True, default=str)
+        return str(value)
+
+    def _extract_dedup_value(self, item: Any) -> Any:
+        if not self.dedup_key:
+            return item
+
+        try:
+            value = item.get(self.dedup_key)
+        except AttributeError:
+            value = getattr(item, self.dedup_key, None)
+
+        if value is None and self.missing_key_policy == "error":
+            raise AssertionError(
+                f"Deduplication failed: entity {item} has no key or attr {self.dedup_key}"
+            )
+        return value
+
+    def _decode_seen_from_cursor(self, next_page: FeedResultNextPage) -> List[str]:
+        entry = next_page.data.get(self.merger_id)
+        if not entry or entry.after is None:
+            return []
+
+        after = entry.after
+        if isinstance(after, dict) and "z" in after:
+            payload = base64.urlsafe_b64decode(after["z"].encode())
+            raw = zlib.decompress(payload).decode()
+            return list(json.loads(raw))
+        if isinstance(after, dict) and "seen" in after:
+            return list(after["seen"])
+        if isinstance(after, list):
+            return list(after)
+        return []
+
+    def _encode_seen_for_cursor(self, seen_keys_in_order: List[str]) -> Any:
+        if self.cursor_max_keys is not None:
+            seen_keys_in_order = seen_keys_in_order[-self.cursor_max_keys :]
+
+        if not self.cursor_compress:
+            return {"v": 1, "seen": seen_keys_in_order}
+
+        raw = json.dumps(seen_keys_in_order).encode()
+        compressed = zlib.compress(raw)
+        return {
+            "v": 1,
+            "c": "zlib+base64",
+            "n": len(seen_keys_in_order),
+            "z": base64.urlsafe_b64encode(compressed).decode(),
+        }
+
+    async def _redis_sismember(self, redis_client: Union[redis.Redis, AsyncRedis], key: str, member: str) -> bool:
+        res = redis_client.sismember(key, member)
+        if inspect.iscoroutine(res):
+            res = await res
+        return bool(res)
+
+    async def _redis_sadd_and_expire(
+        self,
+        redis_client: Union[redis.Redis, AsyncRedis],
+        key: str,
+        members: List[str],
+    ) -> None:
+        if not members:
+            return
+        res = redis_client.sadd(key, *members)
+        if inspect.iscoroutine(res):
+            await res
+            await redis_client.expire(key, self.state_ttl_seconds)
+        else:
+            redis_client.expire(key, self.state_ttl_seconds)
+
+    def _build_redis_state_key(self, user_id: Any, params: Dict[str, Any]) -> str:
+        suffix = params.get("custom_deduplication_key") or params.get("custom_view_session_key")
+        if suffix:
+            return f"dedup:{self.merger_id}:{user_id}:{suffix}"
+        return f"dedup:{self.merger_id}:{user_id}"
+
+    async def get_data(
+        self,
+        methods_dict: Dict[str, Callable],
+        user_id: Any,
+        limit: int,
+        next_page: FeedResultNextPage,
+        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        **params: Any,
+    ) -> FeedResult:
+        if limit <= 0:
+            return FeedResult(data=[], next_page=next_page, has_next_page=False)
+
+        # Treat an explicit "page 0" (or missing cursor for this merger) as a fresh session.
+        # This allows clients to restart the feed (e.g., full reload) without carrying over seen state.
+        requested_page = next_page.data.get(self.merger_id).page if self.merger_id in next_page.data else None
+        is_fresh_session = requested_page is None or (isinstance(requested_page, int) and requested_page <= 0)
+
+        if self.state_backend == "redis" and not redis_client:
+            raise ValueError("Redis client must be provided if using DeduplicationMerger with state_backend=redis")
+
+        if hasattr(next_page, "model_copy"):
+            working_next_page = next_page.model_copy(deep=True)  # type: ignore[attr-defined]
+        else:
+            working_next_page = next_page.copy(deep=True)
+        sorted_items = sorted(self.items, key=lambda x: x.priority, reverse=True)
+
+        seen_keys_in_order: List[str] = []
+        seen_cursor_set: set[str] = set()
+        if self.state_backend == "cursor" and not is_fresh_session:
+            seen_keys_in_order = self._decode_seen_from_cursor(next_page)
+            seen_cursor_set = set(seen_keys_in_order)
+
+        redis_state_key = ""
+        if self.state_backend == "redis" and redis_client:
+            redis_state_key = self._build_redis_state_key(user_id=user_id, params=params)
+            if is_fresh_session:
+                # Drop state for a full restart.
+                deleted = redis_client.delete(redis_state_key)
+                if inspect.iscoroutine(deleted):
+                    await deleted
+
+        result_items: List[Any] = []
+        accepted: Dict[str, Dict[str, Any]] = {}
+        redis_new_members: List[str] = []
+        any_has_next_page = False
+
+        loops = 0
+        while len(result_items) < limit and loops < self.max_refill_loops:
+            loops += 1
+            before_len = len(result_items)
+
+            for item in sorted_items:
+                remaining = limit - len(result_items)
+                if remaining <= 0:
+                    break
+
+                request_limit = max(1, remaining * max(1, self.overfetch_factor))
+                item_result = await item.data.get_data(
+                    methods_dict=methods_dict,
+                    user_id=user_id,
+                    limit=request_limit,
+                    next_page=working_next_page,
+                    redis_client=redis_client,
+                    **params,
+                )
+
+                any_has_next_page = any_has_next_page or item_result.has_next_page
+                working_next_page.data.update(item_result.next_page.data)
+
+                for entity in item_result.data:
+                    raw_value = self._extract_dedup_value(entity)
+                    if raw_value is None:
+                        if self.missing_key_policy == "drop":
+                            continue
+                        if self.missing_key_policy == "keep":
+                            # Make a unique key per object instance representation.
+                            raw_value = ("__missing__", id(entity))
+
+                    key = self._normalize_key(raw_value)
+
+                    if key in accepted:
+                        if item.priority > accepted[key]["priority"]:
+                            result_items[accepted[key]["index"]] = entity
+                            accepted[key]["priority"] = item.priority
+                        continue
+
+                    if self.state_backend == "cursor":
+                        if key in seen_cursor_set:
+                            continue
+                    else:
+                        assert redis_client is not None
+                        if await self._redis_sismember(redis_client, redis_state_key, key):
+                            continue
+
+                    accepted[key] = {"priority": item.priority, "index": len(result_items)}
+                    result_items.append(entity)
+
+                    if self.state_backend == "cursor":
+                        seen_cursor_set.add(key)
+                        seen_keys_in_order.append(key)
+                    else:
+                        redis_new_members.append(key)
+
+                    if len(result_items) >= limit:
+                        break
+
+                if len(result_items) >= limit:
+                    break
+
+            if len(result_items) == before_len:
+                break
+
+        if self.state_backend == "redis" and redis_client:
+            await self._redis_sadd_and_expire(redis_client, redis_state_key, redis_new_members)
+
+        page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+        merger_after: Any = None
+        if self.state_backend == "cursor":
+            merger_after = self._encode_seen_for_cursor(seen_keys_in_order)
+
+        if hasattr(working_next_page, "model_copy"):
+            result_next_page = working_next_page.model_copy(deep=True)  # type: ignore[attr-defined]
+        else:
+            result_next_page = working_next_page.copy(deep=True)
+        result_next_page.data[self.merger_id] = FeedResultNextPageInside(page=page + 1, after=merger_after)
+
+        return FeedResult(data=result_items, next_page=result_next_page, has_next_page=any_has_next_page)
+
+
 class SubFeed(BaseFeedConfigModel):
     """
     Модель субфида.
@@ -1122,11 +1366,20 @@ class FeedConfig(BaseModel):
 
 
 # Update Forward Refs
-MergerPositional.update_forward_refs()
-MergerPercentage.update_forward_refs()
-SubFeed.update_forward_refs()
-MergerPercentageItem.update_forward_refs()
-MergerAppend.update_forward_refs()
-MergerAppendDistribute.update_forward_refs()
-MergerPercentageGradient.update_forward_refs()
-MergerViewSession.update_forward_refs()
+def _rebuild_model(model: Any) -> None:
+    if hasattr(model, "model_rebuild"):
+        model.model_rebuild()  # type: ignore[attr-defined]
+    else:
+        model.update_forward_refs()  # type: ignore[attr-defined]
+
+
+_rebuild_model(MergerPositional)
+_rebuild_model(MergerPercentage)
+_rebuild_model(SubFeed)
+_rebuild_model(MergerPercentageItem)
+_rebuild_model(MergerAppend)
+_rebuild_model(MergerAppendDistribute)
+_rebuild_model(MergerPercentageGradient)
+_rebuild_model(MergerViewSession)
+_rebuild_model(DeduplicationMergerItem)
+_rebuild_model(DeduplicationMerger)

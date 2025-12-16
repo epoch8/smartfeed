@@ -8,6 +8,7 @@ import time
 from smartfeed.schemas import FeedResultNextPage, MergerViewSession
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_VIEW_SESSION_CONFIG
+from tests.utils import parse_model
 
 
 class RedisReplicationSimulator:
@@ -63,7 +64,7 @@ async def test_redis_replication_delay_problem():
     
     # Используем симулятор задержки репликации
     redis_client = RedisReplicationSimulator(real_client)
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_CONFIG)
     
     print("\n=== Демонстрация проблемы с задержкой репликации ===")
     
@@ -117,7 +118,7 @@ async def test_redis_multiple_requests():
     real_client.delete(test_key)
     
     redis_client = RedisReplicationSimulator(real_client)
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_CONFIG)
     
     print("\n=== Тест множественных запросов ===")
     

@@ -3,6 +3,7 @@ import pytest
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerAppendDistribute
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_APPEND_DISTRIBUTE_CONFIG
+from tests.utils import parse_model
 
 
 @pytest.mark.asyncio
@@ -11,7 +12,7 @@ async def test_merger_disturbed_append() -> None:
     Тест для проверки получения данных из append мерджера.
     """
 
-    merger_distributed = MergerAppendDistribute.parse_obj(MERGER_APPEND_DISTRIBUTE_CONFIG)
+    merger_distributed = parse_model(MergerAppendDistribute, MERGER_APPEND_DISTRIBUTE_CONFIG)
     merger_distributed_res = await merger_distributed.get_data(
         methods_dict=METHODS_DICT,
         limit=20,
@@ -31,7 +32,7 @@ async def test_merger_append_with_item_1_page_2() -> None:
     """
     Тест для проверки получения данных из append мерджера с курсором пагинации первого субфида.
     """
-    merger_distributed = MergerAppendDistribute.parse_obj(MERGER_APPEND_DISTRIBUTE_CONFIG)
+    merger_distributed = parse_model(MergerAppendDistribute, MERGER_APPEND_DISTRIBUTE_CONFIG)
     merger_distributed_res = await merger_distributed.get_data(
         methods_dict=METHODS_DICT,
         limit=11,

@@ -86,3 +86,33 @@ PARSING_CONFIG_FIXTURE = {
         },
     },
 }
+
+
+PARSING_DEDUP_CONFIG_FIXTURE = {
+    "version": "1",
+    "feed": {
+        "merger_id": "merger_deduplication_parsing_example",
+        "type": "merger_deduplication",
+        "dedup_key": "id",
+        "state_backend": "cursor",
+        "cursor_compress": True,
+        "items": [
+            {
+                "priority": 100,
+                "data": {
+                    "subfeed_id": "subfeed_dedup_priority_high",
+                    "type": "subfeed",
+                    "method_name": "posted",
+                },
+            },
+            {
+                "priority": 0,
+                "data": {
+                    "subfeed_id": "subfeed_dedup_priority_low",
+                    "type": "subfeed",
+                    "method_name": "posted",
+                },
+            },
+        ],
+    },
+}

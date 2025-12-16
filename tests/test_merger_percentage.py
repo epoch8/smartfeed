@@ -3,6 +3,7 @@ import pytest
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerPercentage
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_PERCENTAGE_CONFIG
+from tests.utils import parse_model
 
 
 @pytest.mark.asyncio
@@ -11,7 +12,7 @@ async def test_merger_percentage() -> None:
     Тест для проверки получения данных из процентного мерджера.
     """
 
-    merger_percentage = MergerPercentage.parse_obj(MERGER_PERCENTAGE_CONFIG)
+    merger_percentage = parse_model(MergerPercentage, MERGER_PERCENTAGE_CONFIG)
     merger_percentage_res = await merger_percentage.get_data(
         methods_dict=METHODS_DICT,
         limit=10,

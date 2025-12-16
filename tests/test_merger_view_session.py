@@ -7,6 +7,7 @@ from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, Merg
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_VIEW_SESSION_CONFIG, MERGER_VIEW_SESSION_DUPS_CONFIG
 from tests.fixtures.redis import redis_client
+from tests.utils import parse_model
 
 
 @pytest.mark.asyncio
@@ -15,7 +16,7 @@ async def test_merger_view_session_no_redis() -> None:
     Тест для проверки получения данных из мерджера с кэшированием без клиента Redis.
     """
 
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_CONFIG)
     with pytest.raises(ValueError):
         await merger_vs.get_data(
             methods_dict=METHODS_DICT,
@@ -32,7 +33,7 @@ async def test_merger_view_session(redis_client) -> None:
     Тест для проверки получения данных из мерджера с кэшированием.
     """
 
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_CONFIG)
     merger_vs_res = await merger_vs.get_data(
         methods_dict=METHODS_DICT,
         limit=10,
@@ -59,7 +60,7 @@ async def test_merger_view_session_custom_key(redis_client) -> None:
     Тест для проверки получения данных из мерджера с кэшированием по ключу с кастомным постфиксом.
     """
 
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_CONFIG)
     # Даем дополнительный параметр, который мерджер добавит в ключ кэша.
     merger_vs_res = await merger_vs.get_data(
         methods_dict=METHODS_DICT,
@@ -88,7 +89,7 @@ async def test_merger_view_session_next_page(redis_client) -> None:
     Тест для проверки получения данных следующей страницы из мерджера с кэшированием.
     """
 
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_CONFIG)
     merger_vs_res = await merger_vs.get_data(
         methods_dict=METHODS_DICT,
         limit=10,
@@ -113,7 +114,7 @@ async def test_merger_view_session_next_page(redis_client) -> None:
 @pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
 @pytest.mark.asyncio
 async def test_merger_view_session_deduplication(redis_client) -> None:
-    merger_vs = MergerViewSession.parse_obj(MERGER_VIEW_SESSION_DUPS_CONFIG)
+    merger_vs = parse_model(MergerViewSession, MERGER_VIEW_SESSION_DUPS_CONFIG)
     merger_vs_res = await merger_vs.get_data(
         methods_dict=METHODS_DICT,
         limit=10,

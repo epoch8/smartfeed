@@ -16,7 +16,7 @@ async def test_sub_feed() -> None:
     Тест для проверки получения данных из субфида (без параметров).
     """
 
-    sub_feed = SubFeed.parse_obj(SUBFEED_CONFIG)
+    sub_feed = SubFeed.model_validate(SUBFEED_CONFIG)
     sub_feed_data = await sub_feed.get_data(
         methods_dict=METHODS_DICT,
         limit=15,
@@ -33,7 +33,7 @@ async def test_sub_feed_with_params() -> None:
     Тест для проверки получения данных из субфида (с параметрами).
     """
 
-    sub_feed = SubFeed.parse_obj(SUBFEED_WITH_PARAMS_CONFIG)
+    sub_feed = SubFeed.model_validate(SUBFEED_WITH_PARAMS_CONFIG)
     sub_feed_data = await sub_feed.get_data(
         methods_dict=METHODS_DICT,
         limit=15,
@@ -50,7 +50,7 @@ async def test_sub_feed_raise_error() -> None:
     Тест для проверки получения данных из субфида (без параметров).
     """
 
-    sub_feed = SubFeed.parse_obj(SUBFEED_CONFIG_RAISE_ERROR)
+    sub_feed = SubFeed.model_validate(SUBFEED_CONFIG_RAISE_ERROR)
 
     with pytest.raises(Exception):
         await sub_feed.get_data(
@@ -67,7 +67,7 @@ async def test_sub_feed_no_raise_error() -> None:
     Тест для проверки получения данных из субфида (без параметров).
     """
 
-    sub_feed = SubFeed.parse_obj(SUBFEED_CONFIG_NO_RAISE_ERROR)
+    sub_feed = SubFeed.model_validate(SUBFEED_CONFIG_NO_RAISE_ERROR)
     sub_feed_data = await sub_feed.get_data(
         methods_dict=METHODS_DICT,
         limit=15,
