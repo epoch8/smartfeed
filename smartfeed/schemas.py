@@ -7,7 +7,7 @@ import zlib
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from random import shuffle
-from typing import Annotated, Any, Callable, Dict, List, Literal, Optional, Union, no_type_check
+from typing import Annotated, Any, Awaitable, Callable, Dict, Iterator, List, Literal, Optional, Union, cast, no_type_check
 
 import redis
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -19,7 +19,7 @@ def _pydantic_deep_copy(model: Any) -> Any:
     """Deep copy helper compatible with Pydantic v1 and v2."""
 
     if hasattr(model, "model_copy"):
-        return model.model_copy(deep=True)  # type: ignore[attr-defined]
+        return model.model_copy(deep=True)
     return model.copy(deep=True)
 
 
@@ -63,7 +63,10 @@ class _RedisDedupState(_DedupState):
     redis_seen_cache: Dict[str, Optional[int]]
     redis_new_scores: Dict[str, int]
     seen_request_set: set[str]
-    zmscore: Callable[[Union[redis.Redis, AsyncRedis], str, List[str]], Any]
+    zmscore: Callable[
+        [Union[redis.Redis, AsyncRedis], str, List[str]],
+        Union[Awaitable[List[Optional[float]]], List[Optional[float]]],
+    ]
 
     async def prefetch(self, keys: List[str]) -> None:
         if not keys:
@@ -83,9 +86,11 @@ class _RedisDedupState(_DedupState):
         if not unique:
             return
 
-        scores = self.zmscore(self.redis_client, self.redis_state_key, unique)
-        if inspect.iscoroutine(scores):
-            scores = await scores
+        scores_result = self.zmscore(self.redis_client, self.redis_state_key, unique)
+        if inspect.iscoroutine(scores_result):
+            scores = await cast(Awaitable[List[Optional[float]]], scores_result)
+        else:
+            scores = cast(List[Optional[float]], scores_result)
 
         for k, s in zip(unique, scores):
             self.redis_seen_cache[k] = None if s is None else int(s)
@@ -847,8 +852,8 @@ class MergerPercentage(BaseFeedConfigModel):
 
         dedup_active = bool(params.pop("_sf_dedup_active", False))
 
-        items_data: List = [None] * len(self.items)
-        results: List[Optional[FeedResult]] = [None] * len(self.items)
+        items_data: List[List[Any]] = [[] for _ in self.items]
+        results: List[Optional[FeedResult]] = [None for _ in self.items]
 
         indexed_items = list(enumerate(self.items))
         fetch_order = indexed_items
@@ -860,7 +865,9 @@ class MergerPercentage(BaseFeedConfigModel):
             )
 
         for idx, item in fetch_order:
-            item_result = await item.data.get_data(
+            item_result = cast(
+                FeedResult,
+                await item.data.get_data(
                 methods_dict=methods_dict,
                 user_id=user_id,
                 limit=limit * item.percentage // 100,
@@ -868,17 +875,18 @@ class MergerPercentage(BaseFeedConfigModel):
                 redis_client=redis_client,
                 _sf_dedup_active=dedup_active,
                 **params,
+                ),
             )
 
             results[idx] = item_result
 
-        for idx, item_result in enumerate(results):
-            assert item_result is not None
-            items_data[idx] = item_result.data
+        for idx, result_item in enumerate(results):
+            assert result_item is not None
+            items_data[idx] = result_item.data
 
-            if not result.has_next_page and item_result.has_next_page:
+            if not result.has_next_page and result_item.has_next_page:
                 result.has_next_page = True
-            result.next_page.data.update(item_result.next_page.data)
+            result.next_page.data.update(result_item.next_page.data)
 
         # Добавляем данные позиции к общему результату процентного мерджера.
         result.data = await self._merge_items_data(items_data=items_data)
@@ -1351,7 +1359,7 @@ class MergerDeduplication(BaseFeedConfigModel):
         start_after: Optional[int] = int(next_after) if can_overfetch else None
         return can_overfetch, request_limit, start_after
 
-    def _iter_subfeeds(self, feed: BaseFeedConfigModel):
+    def _iter_subfeeds(self, feed: BaseFeedConfigModel) -> Iterator["SubFeed"]:
         if isinstance(feed, SubFeed):
             yield feed
             return
@@ -1412,7 +1420,12 @@ class MergerDeduplication(BaseFeedConfigModel):
         dedup_state: "_DedupState",
         leaf_priority: int,
     ) -> Callable:
-        async def _wrapped_method(user_id: Any, limit: int, next_page: FeedResultNextPageInside, **kw: Any):
+        async def _wrapped_method(
+            user_id: Any,
+            limit: int,
+            next_page: FeedResultNextPageInside,
+            **kw: Any,
+        ) -> FeedResultClient:
             collected: List[Any] = []
             upstream_has_next_page = False
 
@@ -1541,8 +1554,9 @@ class MergerDeduplication(BaseFeedConfigModel):
         if not members:
             return []
 
-        if hasattr(redis_client, "zmscore"):
-            res = redis_client.zmscore(key, members)  # type: ignore[attr-defined]
+        zmscore_fn = getattr(redis_client, "zmscore", None)
+        if zmscore_fn is not None:
+            res = zmscore_fn(key, members)
             if inspect.iscoroutine(res):
                 res = await res
             # redis-py returns list[Optional[float]]
@@ -1567,9 +1581,10 @@ class MergerDeduplication(BaseFeedConfigModel):
         res = redis_client.zadd(key, mapping={m: float(s) for m, s in member_scores.items()})
         if inspect.iscoroutine(res):
             await res
-            await redis_client.expire(key, self.state_ttl_seconds)
-        else:
-            redis_client.expire(key, self.state_ttl_seconds)
+
+        expire_res = redis_client.expire(key, self.state_ttl_seconds)
+        if inspect.iscoroutine(expire_res):
+            await expire_res
 
     def _build_redis_state_key(self, user_id: Any, params: Dict[str, Any]) -> str:
         suffix = params.get("custom_deduplication_key") or params.get("custom_view_session_key")
@@ -1591,7 +1606,8 @@ class MergerDeduplication(BaseFeedConfigModel):
 
         # Treat an explicit "page 0" (or missing cursor for this merger) as a fresh session.
         # This allows clients to restart the feed (e.g., full reload) without carrying over seen state.
-        requested_page = next_page.data.get(self.merger_id).page if self.merger_id in next_page.data else None
+        entry = next_page.data.get(self.merger_id)
+        requested_page = entry.page if entry is not None else None
         is_fresh_session = requested_page is None or (isinstance(requested_page, int) and requested_page <= 0)
 
         if self.state_backend == "redis" and not redis_client:
@@ -1792,9 +1808,9 @@ class FeedConfig(BaseModel):
 # Update Forward Refs
 def _rebuild_model(model: Any) -> None:
     if hasattr(model, "model_rebuild"):
-        model.model_rebuild()  # type: ignore[attr-defined]
+        model.model_rebuild()
     else:
-        model.update_forward_refs()  # type: ignore[attr-defined]
+        model.update_forward_refs()
 
 
 _rebuild_model(MergerPositional)

@@ -20,8 +20,9 @@ class FeedManager:
         :param redis_client: объект клиента Redis (для конфигурации с view_session = True).
         """
 
-        if hasattr(FeedConfig, "model_validate"):
-            self.feed_config = FeedConfig.model_validate(config)  # type: ignore[attr-defined]
+        validate = getattr(FeedConfig, "model_validate", None)
+        if validate is not None:
+            self.feed_config = validate(config)
         else:
             self.feed_config = FeedConfig.parse_obj(config)
         self.methods_dict = methods_dict

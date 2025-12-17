@@ -25,8 +25,9 @@ class TestClientRequest(BaseModel):
     def validate_next_page(cls, value: Union[str, FeedResultNextPage]) -> Union[str, FeedResultNextPage]:
         if isinstance(value, str):
             payload = json.loads(base64.urlsafe_b64decode(value))
-            if hasattr(FeedResultNextPage, "model_validate"):
-                return FeedResultNextPage.model_validate(payload)  # type: ignore[attr-defined]
+            validate = getattr(FeedResultNextPage, "model_validate", None)
+            if validate is not None:
+                return validate(payload)
             return FeedResultNextPage.parse_obj(payload)
         return value
 
