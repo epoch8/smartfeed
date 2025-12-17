@@ -1,13 +1,26 @@
 import base64
-from dataclasses import dataclass
 import inspect
 import json
 import logging
 import zlib
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from random import shuffle
-from typing import Annotated, Any, Awaitable, Callable, Dict, Iterator, List, Literal, Optional, Union, cast, no_type_check
+from typing import (
+    Annotated,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Union,
+    cast,
+    no_type_check,
+)
 
 import redis
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -107,6 +120,7 @@ class _RedisDedupState(_DedupState):
         self.seen_request_set.add(key)
         self.redis_seen_cache[key] = priority
         self.redis_new_scores[key] = max(self.redis_new_scores.get(key, 0), priority)
+
 
 FeedTypes = Annotated[
     Union[
@@ -868,13 +882,13 @@ class MergerPercentage(BaseFeedConfigModel):
             item_result = cast(
                 FeedResult,
                 await item.data.get_data(
-                methods_dict=methods_dict,
-                user_id=user_id,
-                limit=limit * item.percentage // 100,
-                next_page=next_page,
-                redis_client=redis_client,
-                _sf_dedup_active=dedup_active,
-                **params,
+                    methods_dict=methods_dict,
+                    user_id=user_id,
+                    limit=limit * item.percentage // 100,
+                    next_page=next_page,
+                    redis_client=redis_client,
+                    _sf_dedup_active=dedup_active,
+                    **params,
                 ),
             )
 
@@ -1328,9 +1342,7 @@ class MergerDeduplication(BaseFeedConfigModel):
             value = getattr(item, self.dedup_key, None)
 
         if value is None and self.missing_key_policy == "error":
-            raise AssertionError(
-                f"Deduplication failed: entity {item} has no key or attr {self.dedup_key}"
-            )
+            raise AssertionError(f"Deduplication failed: entity {item} has no key or attr {self.dedup_key}")
         return value
 
     def _get_entity_key(self, entity: Any) -> Optional[str]:

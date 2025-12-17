@@ -2,13 +2,7 @@ import inspect
 
 import pytest
 
-from smartfeed.schemas import (
-    FeedResultClient,
-    FeedResultNextPage,
-    FeedResultNextPageInside,
-    MergerDeduplication,
-)
-
+from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside, MergerDeduplication
 from tests.fixtures.redis import redis_client  # noqa: F401
 from tests.utils import parse_model
 
@@ -1009,7 +1003,9 @@ async def test_dedup_distribute_cursor_backend_across_pages_preserves_source_ref
     }
 
     merger = parse_model(MergerDeduplication, config)
-    res_1 = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={}))
+    res_1 = await merger.get_data(
+        methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={})
+    )
     res_2 = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=res_1.next_page)
 
     assert len(res_1.data) == 10
@@ -1026,7 +1022,7 @@ async def test_dedup_distribute_cursor_backend_across_pages_preserves_source_ref
 @pytest.mark.asyncio
 async def test_dedup_percentage_gradient_cursor_backend_across_pages() -> None:
     a_items = [{"id": i, "src": "A"} for i in range(1, 300)]
-    b_items = ([{"id": i, "src": "B"} for i in range(1, 30)] + [{"id": 1000 + i, "src": "B"} for i in range(1, 300)])
+    b_items = [{"id": i, "src": "B"} for i in range(1, 30)] + [{"id": 1000 + i, "src": "B"} for i in range(1, 300)]
 
     methods_dict = {
         "a": make_offset_paged_method(a_items),
@@ -1052,7 +1048,9 @@ async def test_dedup_percentage_gradient_cursor_backend_across_pages() -> None:
     }
 
     merger = parse_model(MergerDeduplication, config)
-    res_1 = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={}))
+    res_1 = await merger.get_data(
+        methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={})
+    )
     res_2 = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=res_1.next_page)
 
     _assert_no_dupes_in_page(res_1.data)
@@ -1148,8 +1146,19 @@ async def test_dedup_wrapper_with_view_session_merger(redis_client) -> None:
                 "type": "merger_percentage",
                 "shuffle": False,
                 "items": [
-                    {"percentage": 50, "data": {"subfeed_id": "sf_low", "type": "subfeed", "method_name": "low", "dedup_priority": 0}},
-                    {"percentage": 50, "data": {"subfeed_id": "sf_high", "type": "subfeed", "method_name": "high", "dedup_priority": 100}},
+                    {
+                        "percentage": 50,
+                        "data": {"subfeed_id": "sf_low", "type": "subfeed", "method_name": "low", "dedup_priority": 0},
+                    },
+                    {
+                        "percentage": 50,
+                        "data": {
+                            "subfeed_id": "sf_high",
+                            "type": "subfeed",
+                            "method_name": "high",
+                            "dedup_priority": 100,
+                        },
+                    },
                 ],
             },
         },
@@ -1290,7 +1299,7 @@ async def test_dedup_percentage_gradient_slot_ownership_cursor_backend() -> None
 
     a_items = [{"id": i, "src": "A"} for i in range(1, 300)]
     # Start with duplicates, then provide unique tail.
-    b_items = ([{"id": i, "src": "B"} for i in range(1, 30)] + [{"id": 1000 + i, "src": "B"} for i in range(1, 300)])
+    b_items = [{"id": i, "src": "B"} for i in range(1, 30)] + [{"id": 1000 + i, "src": "B"} for i in range(1, 300)]
 
     methods_dict = {
         "a": make_offset_paged_method(a_items),

@@ -2,9 +2,9 @@ import pytest
 
 from smartfeed.manager import FeedManager
 from smartfeed.schemas import (
-    MergerDeduplication,
     FeedConfig,
     MergerAppend,
+    MergerDeduplication,
     MergerPercentage,
     MergerPercentageGradient,
     MergerPercentageItem,
