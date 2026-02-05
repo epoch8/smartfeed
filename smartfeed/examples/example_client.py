@@ -1,9 +1,9 @@
 import base64
-from smartfeed import jsonlib as json
 from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from smartfeed import jsonlib as json
 from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside
 
 
