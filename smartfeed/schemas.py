@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import inspect
 import json
@@ -26,6 +27,23 @@ import redis
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio import RedisCluster as AsyncRedisCluster
+
+
+def _is_async_redis_client(client: Any) -> bool:
+    return isinstance(client, (AsyncRedis, AsyncRedisCluster))
+
+
+async def _redis_call(client: Any, method_name: str, *args: Any, **kwargs: Any) -> Any:
+    """Call a Redis method without blocking the event loop.
+
+    - For `redis.asyncio` clients, calls are awaited directly.
+    - For sync `redis.Redis`, calls are offloaded via `asyncio.to_thread()`.
+    """
+
+    method = getattr(client, method_name)
+    if _is_async_redis_client(client):
+        return await method(*args, **kwargs)
+    return await asyncio.to_thread(method, *args, **kwargs)
 
 
 def _pydantic_deep_copy(model: Any) -> Any:
@@ -287,7 +305,7 @@ class MergerViewSession(BaseFeedConfigModel):
         self,
         methods_dict: Dict[str, Callable],
         user_id: Any,
-        redis_client: redis.Redis,
+        redis_client: Union[redis.Redis, AsyncRedis],
         cache_key: str,
         **params: Any,
     ) -> List[Any]:
@@ -313,7 +331,7 @@ class MergerViewSession(BaseFeedConfigModel):
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
-        redis_client.set(name=cache_key, value=json.dumps(data), ex=self.session_live_time)
+        await _redis_call(redis_client, "set", cache_key, json.dumps(data), ex=self.session_live_time)
         return data
 
     async def _set_cache_async(
@@ -356,7 +374,7 @@ class MergerViewSession(BaseFeedConfigModel):
         user_id: Any,
         limit: int,
         next_page: FeedResultNextPage,
-        redis_client: redis.Redis,
+        redis_client: Union[redis.Redis, AsyncRedis],
         **params: Any,
     ) -> FeedResult:
         """
@@ -380,7 +398,8 @@ class MergerViewSession(BaseFeedConfigModel):
 
         logging.info("MergerViewSession cache request for %s", cache_key)
         # Если кэш не найден или передан пустой курсор пагинации на мерджер, обновляем данные и записываем в кэш.
-        if not redis_client.exists(cache_key) or self.merger_id not in next_page.data:
+        cache_exists = bool(await _redis_call(redis_client, "exists", cache_key))
+        if not cache_exists or self.merger_id not in next_page.data:
             logging.info("Cache miss or new session - generating fresh data for %s", cache_key)
             # Получаем свежие данные и используем их напрямую (избегаем чтение из кэша)
             session_data = await self._set_cache(
@@ -389,7 +408,7 @@ class MergerViewSession(BaseFeedConfigModel):
         else:
             logging.info("Cache exists - attempting read from Redis for %s", cache_key)
             # Читаем из кэша только если он уже существовал
-            cached_data = redis_client.get(name=cache_key)
+            cached_data = await _redis_call(redis_client, "get", cache_key)
             if cached_data is None:
                 # Fallback: если кэш пропал, получаем свежие данные
                 logging.info(
@@ -1574,6 +1593,17 @@ class MergerDeduplication(BaseFeedConfigModel):
             # redis-py returns list[Optional[float]]
             return [None if v is None else float(v) for v in list(res)]
 
+        # Fallback: pipelined zscore. For sync clients, run the whole pipeline in a thread.
+        if not _is_async_redis_client(redis_client):
+            def _sync_pipeline_execute() -> Any:
+                pipe = redis_client.pipeline()
+                for m in members:
+                    pipe.zscore(key, m)
+                return pipe.execute()
+
+            res = await asyncio.to_thread(_sync_pipeline_execute)
+            return [None if v is None else float(v) for v in list(res)]
+
         pipe = redis_client.pipeline()
         for m in members:
             pipe.zscore(key, m)
@@ -1590,13 +1620,8 @@ class MergerDeduplication(BaseFeedConfigModel):
     ) -> None:
         if not member_scores:
             return
-        res = redis_client.zadd(key, mapping={m: float(s) for m, s in member_scores.items()})
-        if inspect.iscoroutine(res):
-            await res
-
-        expire_res = redis_client.expire(key, self.state_ttl_seconds)
-        if inspect.iscoroutine(expire_res):
-            await expire_res
+        await _redis_call(redis_client, "zadd", key, mapping={m: float(s) for m, s in member_scores.items()})
+        await _redis_call(redis_client, "expire", key, self.state_ttl_seconds)
 
     def _build_redis_state_key(self, user_id: Any, params: Dict[str, Any]) -> str:
         suffix = params.get("custom_deduplication_key") or params.get("custom_view_session_key")
@@ -1647,9 +1672,7 @@ class MergerDeduplication(BaseFeedConfigModel):
             redis_state_key = self._build_redis_state_key(user_id=user_id, params=params)
             if is_fresh_session:
                 # Drop state for a full restart.
-                deleted = redis_client.delete(redis_state_key)
-                if inspect.iscoroutine(deleted):
-                    await deleted
+                await _redis_call(redis_client, "delete", redis_state_key)
 
         # Create a single state helper shared across all leaf wrappers.
         if self.state_backend == "cursor":
