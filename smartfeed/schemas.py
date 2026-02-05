@@ -582,19 +582,35 @@ class MergerAppend(BaseFeedConfigModel):
 
         if dedup_active:
             indexed_items = list(enumerate(self.items))
-            fetch_order = sorted(indexed_items, key=lambda p: (getattr(p[1], "dedup_priority", 0), -p[0]), reverse=True)
             fetched: Dict[int, FeedResult] = {}
 
-            for idx, item in fetch_order:
-                fetched[idx] = await item.get_data(
-                    methods_dict=methods_dict,
-                    user_id=user_id,
-                    limit=limit,
-                    next_page=next_page,
-                    redis_client=redis_client,
-                    _sf_dedup_active=True,
-                    **params,
-                )
+            # Always-on parallelism in dedup mode: preserve dedup semantics by ensuring
+            # higher priority is recorded first; fetch same-priority children concurrently.
+            groups: Dict[int, List[tuple[int, FeedTypes]]] = defaultdict(list)
+            for idx, item in indexed_items:
+                prio = int(getattr(item, "dedup_priority", 0))
+                groups[prio].append((idx, item))
+
+            for prio in sorted(groups.keys(), reverse=True):
+                group = groups[prio]
+                coros: List[Awaitable[FeedResult]] = []
+                order: List[int] = []
+                for idx, item in group:
+                    order.append(idx)
+                    coros.append(
+                        item.get_data(
+                            methods_dict=methods_dict,
+                            user_id=user_id,
+                            limit=limit,
+                            next_page=_pydantic_deep_copy(next_page),
+                            redis_client=redis_client,
+                            _sf_dedup_active=True,
+                            **params,
+                        )
+                    )
+                group_results = await asyncio.gather(*coros)
+                for idx, r in zip(order, group_results):
+                    fetched[idx] = cast(FeedResult, r)
 
             for idx, _item in indexed_items:
                 item_result = fetched[idx]
