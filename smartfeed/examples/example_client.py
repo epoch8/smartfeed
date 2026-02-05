@@ -1,5 +1,5 @@
 import base64
-import json
+from smartfeed import jsonlib as json
 from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator

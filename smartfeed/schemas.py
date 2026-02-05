@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import inspect
-import json
+from . import jsonlib as json
 import logging
 import zlib
 from abc import ABC, abstractmethod
