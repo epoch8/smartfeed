@@ -1,13 +1,17 @@
-import inspect
 import json
 
 import pytest
 
+from smartfeed.feed_models import _redis_call
 from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerViewSession
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_VIEW_SESSION_CONFIG, MERGER_VIEW_SESSION_DUPS_CONFIG
 from tests.fixtures.redis import redis_client
 from tests.utils import parse_model
+
+
+async def _get_cache_json(redis_client, key: str):
+    return json.loads(await _redis_call(redis_client, "get", key))
 
 
 @pytest.mark.asyncio
@@ -41,12 +45,7 @@ async def test_merger_view_session(redis_client) -> None:
         user_id="x",
         redis_client=redis_client,
     )
-    merger_vs_cache = redis_client.get(name="merger_view_session_example_x")
-    # Для использования синхронной и асинхронной фикстуры в одном тесте проверяем метод get
-    if inspect.iscoroutine(merger_vs_cache):
-        merger_vs_cache = json.loads(await merger_vs_cache)
-    else:
-        merger_vs_cache = json.loads(merger_vs_cache)
+    merger_vs_cache = await _get_cache_json(redis_client, "merger_view_session_example_x")
 
     assert merger_vs_res.data == ["x_1", "x_2", "x_3", "x_4", "x_5", "x_6", "x_7", "x_8", "x_9", "x_10"]
     assert len(merger_vs_cache) == merger_vs.session_size
@@ -70,12 +69,7 @@ async def test_merger_view_session_custom_key(redis_client) -> None:
         redis_client=redis_client,
         custom_view_session_key="foo",
     )
-    merger_vs_cache = redis_client.get(name="merger_view_session_example_x_foo")
-    # Для использования синхронной и асинхронной фикстуры в одном тесте проверяем метод get
-    if inspect.iscoroutine(merger_vs_cache):
-        merger_vs_cache = json.loads(await merger_vs_cache)
-    else:
-        merger_vs_cache = json.loads(merger_vs_cache)
+    merger_vs_cache = await _get_cache_json(redis_client, "merger_view_session_example_x_foo")
 
     assert merger_vs_res.data == ["x_1", "x_2", "x_3", "x_4", "x_5", "x_6", "x_7", "x_8", "x_9", "x_10"]
     assert len(merger_vs_cache) == merger_vs.session_size
@@ -99,12 +93,7 @@ async def test_merger_view_session_next_page(redis_client) -> None:
         user_id="x",
         redis_client=redis_client,
     )
-    merger_vs_cache = redis_client.get(name="merger_view_session_example_x")
-    # Для использования синхронной и асинхронной фикстуры в одном тесте проверяем метод get
-    if inspect.iscoroutine(merger_vs_cache):
-        merger_vs_cache = json.loads(await merger_vs_cache)
-    else:
-        merger_vs_cache = json.loads(merger_vs_cache)
+    merger_vs_cache = await _get_cache_json(redis_client, "merger_view_session_example_x")
 
     assert merger_vs_res.data == ["x_11", "x_12", "x_13", "x_14", "x_15", "x_16", "x_17", "x_18", "x_19", "x_20"]
     assert len(merger_vs_cache) == merger_vs.session_size
@@ -122,12 +111,7 @@ async def test_merger_view_session_deduplication(redis_client) -> None:
         user_id="x",
         redis_client=redis_client,
     )
-    merger_vs_cache = redis_client.get(name="merger_view_session_example_x")
-    # Для использования синхронной и асинхронной фикстуры в одном тесте проверяем метод get
-    if inspect.iscoroutine(merger_vs_cache):
-        merger_vs_cache = json.loads(await merger_vs_cache)
-    else:
-        merger_vs_cache = json.loads(merger_vs_cache)
+    merger_vs_cache = await _get_cache_json(redis_client, "merger_view_session_example_x")
 
     assert merger_vs_res.data == [i for i in range(1, 11)]
     assert len(merger_vs_cache) == merger_vs.session_size

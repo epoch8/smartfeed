@@ -81,13 +81,11 @@ class MergerPercentageGradient(BaseFeedConfigModel):
     ) -> FeedResult:
         if ctx is None:
             ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
+        else:
+            ctx.ensure_redis_client(redis_client)
 
-        if ctx.executor is None:
-            from ..execution.executor import Executor
-
-            ctx.executor = Executor()
-
-        return await ctx.executor.run(self, ctx, limit, next_page, **params)
+        executor = ctx.ensure_executor()
+        return await executor.run(self, ctx, limit, next_page, **params)
 
     def build_plan(
         self,
@@ -117,7 +115,7 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             SlotSpec(owner=owner_to, max_count=int(limits_and_percents["limit_to"])),
         ]
 
-        async def _assemble(
+        def _assemble(
             output: List[Any],
             merged_next_page: FeedResultNextPage,
             owner_results: Dict[int, FeedResult],

@@ -26,7 +26,7 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     sorting_desc: bool = False
 
     @no_type_check
-    async def _uniform_distribute(self, data: list) -> list:
+    def _uniform_distribute(self, data: list) -> list:
         if self.sorting_key:
             data = sorted(data, key=lambda x: x[self.sorting_key], reverse=self.sorting_desc)
 
@@ -58,11 +58,11 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     ) -> SlotsPlan:
         slots = [SlotSpec(owner=item, max_count=limit) for item in self.items]
 
-        async def _assemble(
+        def _assemble(
             output: List[Any], merged_next_page: FeedResultNextPage, owner_results: Dict[int, FeedResult]
         ) -> FeedResult:
             has_next_page = any(r.has_next_page for r in owner_results.values())
-            distributed = await self._uniform_distribute(output)
+            distributed = self._uniform_distribute(output)
             return FeedResult(data=distributed, next_page=merged_next_page, has_next_page=has_next_page)
 
         return SlotsPlan(
@@ -86,10 +86,8 @@ class MergerAppendDistribute(BaseFeedConfigModel):
     ) -> FeedResult:
         if ctx is None:
             ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
+        else:
+            ctx.ensure_redis_client(redis_client)
 
-        if ctx.executor is None:
-            from ..execution.executor import Executor
-
-            ctx.executor = Executor()
-
-        return await ctx.executor.run(self, ctx, limit, next_page, **params)
+        executor = ctx.ensure_executor()
+        return await executor.run(self, ctx, limit, next_page, **params)

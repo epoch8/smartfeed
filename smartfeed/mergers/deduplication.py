@@ -54,37 +54,34 @@ class MergerDeduplication(BaseFeedConfigModel):
 
     def _collect_descendant_cursor_keys(self, feed: BaseFeedConfigModel) -> set[str]:
         keys: set[str] = set()
+        stack = [feed]
+        while stack:
+            node = stack.pop()
 
-        subfeed_id = getattr(feed, "subfeed_id", None)
-        if isinstance(subfeed_id, str) and subfeed_id:
-            keys.add(subfeed_id)
+            for attr in ("subfeed_id", "merger_id"):
+                value = getattr(node, attr, None)
+                if isinstance(value, str) and value:
+                    keys.add(value)
 
-        merger_id = getattr(feed, "merger_id", None)
-        if isinstance(merger_id, str) and merger_id:
-            keys.add(merger_id)
+            for child in (
+                getattr(node, "data", None),
+                getattr(node, "positional", None),
+                getattr(node, "default", None),
+            ):
+                if isinstance(child, BaseFeedConfigModel):
+                    stack.append(child)
 
-        child: Any
-        for attr_name in ("data", "positional", "default"):
-            child = getattr(feed, attr_name, None)
-            if isinstance(child, BaseFeedConfigModel):
-                keys.update(self._collect_descendant_cursor_keys(child))
-
-        for attr_name in ("item_from", "item_to"):
-            child = getattr(feed, attr_name, None)
-            inner = getattr(child, "data", None)
-            if isinstance(inner, BaseFeedConfigModel):
-                keys.update(self._collect_descendant_cursor_keys(inner))
-
-        items = getattr(feed, "items", None)
-        if isinstance(items, list):
-            for item in items:
-                if isinstance(item, BaseFeedConfigModel):
-                    keys.update(self._collect_descendant_cursor_keys(item))
-                    continue
-
-                inner = getattr(item, "data", None)
+            for wrapper in (getattr(node, "item_from", None), getattr(node, "item_to", None)):
+                inner = getattr(wrapper, "data", None)
                 if isinstance(inner, BaseFeedConfigModel):
-                    keys.update(self._collect_descendant_cursor_keys(inner))
+                    stack.append(inner)
+
+            items = getattr(node, "items", None)
+            if isinstance(items, list):
+                for item in items:
+                    inner = item if isinstance(item, BaseFeedConfigModel) else getattr(item, "data", None)
+                    if isinstance(inner, BaseFeedConfigModel):
+                        stack.append(inner)
 
         return keys
 
@@ -117,15 +114,11 @@ class MergerDeduplication(BaseFeedConfigModel):
     ) -> FeedResult:
         if ctx is None:
             ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
-        elif ctx.redis_client is None and redis_client is not None:
-            ctx.redis_client = redis_client
+        else:
+            ctx.ensure_redis_client(redis_client)
 
-        if ctx.executor is None:
-            from ..execution.executor import Executor
-
-            ctx.executor = Executor()
-
-        return await ctx.executor.run(self, ctx, limit, next_page, **params)
+        executor = ctx.ensure_executor()
+        return await executor.run(self, ctx, limit, next_page, **params)
 
     def build_plan(
         self,

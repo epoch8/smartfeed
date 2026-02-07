@@ -4,9 +4,8 @@ import redis
 from redis.asyncio import Redis as AsyncRedis
 
 from .execution.context import ExecutionContext
-from .execution.executor import Executor
+from .pydantic_compat import parse_model
 from .schemas import FeedConfig, FeedResult, FeedResultNextPage
-from tests.utils import parse_model
 
 
 class FeedManager:
@@ -23,11 +22,7 @@ class FeedManager:
         :param redis_client: объект клиента Redis (для конфигурации с view_session = True).
         """
 
-        validate = getattr(FeedConfig, "model_validate", None)
-        if validate is not None:
-            self.feed_config = validate(config)
-        else:
-            self.feed_config = parse_model(FeedConfig, config)  # type: ignore
+        self.feed_config = parse_model(FeedConfig, config)
         self.methods_dict = methods_dict
         self.redis_client = redis_client
 
@@ -43,6 +38,5 @@ class FeedManager:
         """
 
         ctx = ExecutionContext(methods_dict=self.methods_dict, user_id=user_id, redis_client=self.redis_client)
-        ctx.executor = Executor()
-        result = await ctx.executor.run(self.feed_config.feed, ctx, limit, next_page, **params)
-        return result
+        executor = ctx.ensure_executor()
+        return await executor.run(self.feed_config.feed, ctx, limit, next_page, **params)

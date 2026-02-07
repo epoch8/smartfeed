@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import inspect
 import zlib
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Awaitable, Dict, List, Optional, Tuple, Union, cast
 
 import redis
 from redis.asyncio import Redis as AsyncRedis
@@ -72,11 +71,8 @@ async def redis_zmscore(
     if not members:
         return []
 
-    zmscore_fn = getattr(redis_client, "zmscore", None)
-    if zmscore_fn is not None:
-        res = zmscore_fn(key, members)
-        if inspect.iscoroutine(res):
-            res = await res
+    if getattr(redis_client, "zmscore", None) is not None:
+        res = await _redis_call(redis_client, "zmscore", key, members)
         return [None if v is None else float(v) for v in list(res)]
 
     if not _is_async_redis_client(redis_client):
@@ -93,9 +89,7 @@ async def redis_zmscore(
     pipe = redis_client.pipeline()
     for m in members:
         pipe.zscore(key, m)
-    res = pipe.execute()
-    if inspect.iscoroutine(res):
-        res = await res
+    res = await cast(Awaitable[Any], pipe.execute())
     return [None if v is None else float(v) for v in list(res)]
 
 

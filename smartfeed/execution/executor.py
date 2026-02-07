@@ -286,19 +286,11 @@ class Executor:
 
         page_underfilled = remaining > 0
 
-        if not quota_schedule and not page_underfilled:
-            return {}
-
-        deficits: Dict[int, int] = {}
-
         if quota_schedule:
             return self._compute_quota_deficits(plan=plan, owner_buffers=owner_buffers)
-
-        return self._compute_fill_deficits(
-            plan=plan,
-            remaining=remaining,
-            deficit_slots=deficit_slots,
-        )
+        if not page_underfilled:
+            return {}
+        return self._compute_fill_deficits(plan=plan, remaining=remaining, deficit_slots=deficit_slots)
 
     def _compute_quota_deficits(
         self,
@@ -337,21 +329,12 @@ class Executor:
         remaining: int,
         deficit_slots: List[int],
     ) -> Dict[int, int]:
-        deficits: Dict[int, int] = {}
         to_fill = int(remaining)
         if to_fill <= 0:
-            return deficits
+            return {}
 
-        if deficit_slots:
-            deficits[deficit_slots[-1]] = deficits.get(deficit_slots[-1], 0) + to_fill
-            return deficits
-
-        if plan.slots:
-            last_owner_id = id(plan.slots[-1].owner)
-            deficits[last_owner_id] = deficits.get(last_owner_id, 0) + to_fill
-            return deficits
-
-        return deficits
+        owner_id = deficit_slots[-1] if deficit_slots else (id(plan.slots[-1].owner) if plan.slots else None)
+        return {owner_id: to_fill} if owner_id is not None else {}
 
     async def _refill_deficits(
         self,
@@ -418,10 +401,11 @@ class Executor:
                     continue
 
                 base_np = owner_state["current_next_page"]
-                request_limit = max(1, int(owner_state["remaining"]))
+                remaining_before = max(1, int(owner_state["remaining"]))
+                request_limit = remaining_before
                 can_overfetch = CursorMap.can_overfetch(node=refill_owner, base_next_page=base_np)
                 if can_overfetch and overfetch_factor > 1:
-                    request_limit = max(1, int(owner_state["remaining"]) * overfetch_factor)
+                    request_limit = max(1, remaining_before * overfetch_factor)
 
                 wave_ops.append((refill_owner, refill_owner_id, base_np, request_limit, can_overfetch))
 
@@ -443,43 +427,26 @@ class Executor:
 
             for (owner, owner_id, base_np, request_limit, can_overfetch), result in zip(wave_ops, results):
                 owner_state = state[owner_id]
-                owner_state["last_result"] = result
-                owner_state["last_request_limit"] = request_limit
-                owner_state["last_can_overfetch"] = can_overfetch
-                owner_state["last_base_next_page"] = base_np
+                remaining_before = int(owner_state["remaining"])
+
                 owner_state["current_next_page"] = result.next_page
                 owner_state["has_next_page"] = bool(result.has_next_page)
+                cursor.merge_delta(base_next_page=plan.next_page, owner_next_page=result.next_page)
 
-                cursor.merge_delta(
-                    base_next_page=plan.next_page,
-                    owner_next_page=result.next_page,
-                )
-
-            for refill_owner in deficit_owners:
-                refill_owner_id = id(refill_owner)
-                owner_state = state.get(refill_owner_id)
-                if owner_state is None:
-                    continue
-                if owner_state["remaining"] <= 0:
-                    continue
-                last_result = owner_state["last_result"]
-                if last_result is None:
-                    continue
-
-                refill_prio = int(getattr(refill_owner, "dedup_priority", 0))
+                refill_prio = int(getattr(owner, "dedup_priority", 0))
                 wave_accepted, inspected_count = await dedup_policy.accept_batch(
-                    items=list(last_result.data),
+                    items=list(result.data),
                     priority=refill_prio,
-                    limit=int(owner_state["remaining"]),
+                    limit=max(0, remaining_before),
                 )
 
-                if owner_state["last_can_overfetch"] and owner_state["last_request_limit"] > owner_state["remaining"]:
+                if can_overfetch and request_limit > remaining_before:
                     CursorMap.rewind_overfetch(
-                        node=refill_owner,
-                        base_next_page=owner_state["last_base_next_page"],
-                        result_next_page=owner_state["current_next_page"],
+                        node=owner,
+                        base_next_page=base_np,
+                        result_next_page=result.next_page,
                         inspected_count=inspected_count,
-                        batch_size=len(last_result.data),
+                        batch_size=len(result.data),
                     )
 
                 if wave_accepted:
@@ -488,8 +455,6 @@ class Executor:
 
                 if owner_state["remaining"] > 0 and owner_state["has_next_page"]:
                     owner_state["loops"] += 1
-
-                owner_state["last_result"] = None
 
         for refill_owner in deficit_owners:
             refill_owner_id = id(refill_owner)

@@ -31,7 +31,7 @@ class MergerPercentage(BaseFeedConfigModel):
     shuffle: bool = False
 
     @staticmethod
-    async def _merge_items_data(items_data: List[List]) -> List:
+    def _merge_items_data(items_data: List[List]) -> List:
         result: List = []
         cursor: List[Dict] = []
 
@@ -68,13 +68,11 @@ class MergerPercentage(BaseFeedConfigModel):
     ) -> FeedResult:
         if ctx is None:
             ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
+        else:
+            ctx.ensure_redis_client(redis_client)
 
-        if ctx.executor is None:
-            from ..execution.executor import Executor
-
-            ctx.executor = Executor()
-
-        return await ctx.executor.run(self, ctx, limit, next_page, **params)
+        executor = ctx.ensure_executor()
+        return await executor.run(self, ctx, limit, next_page, **params)
 
     def build_plan(
         self,
@@ -91,7 +89,7 @@ class MergerPercentage(BaseFeedConfigModel):
             child_limit = limit * int(item.percentage) // 100
             slots.append(SlotSpec(owner=owner, max_count=max(0, child_limit)))
 
-        async def _assemble(
+        def _assemble(
             output: List[Any],
             merged_next_page: FeedResultNextPage,
             owner_results: Dict[int, FeedResult],
@@ -107,7 +105,7 @@ class MergerPercentage(BaseFeedConfigModel):
                 items_data.append(list(child_res.data))
                 has_next_page = has_next_page or bool(child_res.has_next_page)
 
-            data = await self._merge_items_data(items_data=items_data)
+            data = self._merge_items_data(items_data=items_data)
             if self.shuffle:
                 shuffle(data)
 

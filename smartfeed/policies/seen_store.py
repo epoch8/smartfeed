@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Protocol, Tuple, Union
 
 import redis
 from redis.asyncio import Redis as AsyncRedis
@@ -123,11 +122,7 @@ class RedisSeenStore:
         if not unique:
             return
 
-        scores_result = redis_zmscore(self.redis_client, self.redis_key, unique)
-        if inspect.iscoroutine(scores_result):
-            scores = await cast(Any, scores_result)
-        else:
-            scores = scores_result
+        scores = await redis_zmscore(self.redis_client, self.redis_key, unique)
 
         for k, s in zip(unique, scores):
             self.redis_seen_cache[k] = None if s is None else int(s)

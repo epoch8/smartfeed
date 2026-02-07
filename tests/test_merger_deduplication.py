@@ -1,13 +1,12 @@
 import asyncio
-import inspect
 
 import pytest
 
+from smartfeed.feed_models import _redis_call
 from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside, MergerDeduplication
 from tests.fixtures import dedup_helpers as dh
 from tests.fixtures.redis import redis_client  # noqa: F401
 from tests.utils import parse_model
-
 
 PROFILES_B_1_TO_8 = {
     "p0": [{"id": 1, "src": "B"}, {"id": 3, "src": "B"}, {"id": 5, "src": "B"}, {"id": 7, "src": "B"}],
@@ -71,7 +70,9 @@ async def test_dedup_positional_slot_ownership_cursor_backend() -> None:
     dh._assert_two_pages_no_dupes(res_1, res_2)
     dh._assert_sources_at_positions(res_2.data, [1, 3, 5], "pos")
 
-    dh._assert_cursor_monotonic_if_present(res_1, res_2, keys=["sf_pos", "sf_default", "positional_mix", "dedup_wrapper"])
+    dh._assert_cursor_monotonic_if_present(
+        res_1, res_2, keys=["sf_pos", "sf_default", "positional_mix", "dedup_wrapper"]
+    )
 
 
 @pytest.mark.asyncio
@@ -316,6 +317,7 @@ async def test_dedup_page_zero_resets_seen_and_descendant_cursors() -> None:
     assert res_2.next_page.data["sf_stream"].after == 5
     assert res_2.next_page.data["sf_stream"].page == 2
 
+
 @pytest.mark.asyncio
 async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf_cursor_exactly() -> None:
     """Append: across pages there is no overlap; refill advances cursors correctly.
@@ -543,9 +545,7 @@ async def test_dedup_overfetch_rewinds_offset_cursor_when_first_batch_all_duplic
     ],
 )
 @pytest.mark.asyncio
-async def test_dedup_distribute_cursor_backend_across_pages_preserves_source_refill(
-    items_a, items_b, min_b_id
-) -> None:
+async def test_dedup_distribute_cursor_backend_across_pages_preserves_source_refill(items_a, items_b, min_b_id) -> None:
     """Distribute: duplicates skipped per-leaf and page slices don't overlap."""
 
     config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
@@ -657,9 +657,7 @@ async def test_dedup_redis_backend_cross_page(
 
     # Ensure state is persisted in Redis.
     key = f"dedup:{merger_id}:u:{custom_deduplication_key}"
-    members = redis_client.zrange(key, 0, -1)
-    if inspect.iscoroutine(members):
-        members = await members
+    members = await _redis_call(redis_client, "zrange", key, 0, -1)
     assert len(members) >= len(set(dh._ids(res_1.data) + dh._ids(res_2.data)))
 
 
@@ -746,4 +744,3 @@ async def test_dedup_in_page_deletion_priority_keeps_high_priority_even_if_confi
     # With 50/50 limits, the high-priority branch should supply ids 1..5, while the low-priority
     # branch will be advanced to avoid duplicates.
     _assert_winning_src_for_ids(res.data, range(1, 6), "high")
-
