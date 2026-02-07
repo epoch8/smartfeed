@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from smartfeed import jsonlib as json
 from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside
+from tests.utils import parse_model
 
 
 class TestClientRequest(BaseModel):
@@ -28,7 +29,8 @@ class TestClientRequest(BaseModel):
             validate = getattr(FeedResultNextPage, "model_validate", None)
             if validate is not None:
                 return validate(payload)
-            return FeedResultNextPage.parse_obj(payload)
+            return parse_model(FeedResultNextPage, payload)  # type: ignore 
+
         return value
 
 

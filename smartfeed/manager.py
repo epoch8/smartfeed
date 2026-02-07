@@ -6,6 +6,7 @@ from redis.asyncio import Redis as AsyncRedis
 from .execution.context import ExecutionContext
 from .execution.executor import Executor
 from .schemas import FeedConfig, FeedResult, FeedResultNextPage
+from tests.utils import parse_model
 
 
 class FeedManager:
@@ -26,7 +27,7 @@ class FeedManager:
         if validate is not None:
             self.feed_config = validate(config)
         else:
-            self.feed_config = FeedConfig.parse_obj(config)
+            self.feed_config = parse_model(FeedConfig, config)  # type: ignore
         self.methods_dict = methods_dict
         self.redis_client = redis_client
 

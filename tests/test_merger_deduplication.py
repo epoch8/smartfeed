@@ -4,254 +4,24 @@ import inspect
 import pytest
 
 from smartfeed.schemas import FeedResultClient, FeedResultNextPage, FeedResultNextPageInside, MergerDeduplication
+from tests.fixtures import dedup_helpers as dh
 from tests.fixtures.redis import redis_client  # noqa: F401
 from tests.utils import parse_model
 
 
-def make_offset_paged_method(items, *, max_per_call=None):
-    async def _method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
-        offset = int(next_page.after or 0)
-        effective_limit = limit
-        if isinstance(max_per_call, int) and max_per_call > 0:
-            effective_limit = min(effective_limit, max_per_call)
-        result_data = items[offset : offset + effective_limit]
-        next_page.after = offset + len(result_data)
-        next_page.page += 1
-        has_next_page = (offset + len(result_data)) < len(items)
-        return FeedResultClient(data=result_data, next_page=next_page, has_next_page=has_next_page)
-
-    return _method
+PROFILES_B_1_TO_8 = {
+    "p0": [{"id": 1, "src": "B"}, {"id": 3, "src": "B"}, {"id": 5, "src": "B"}, {"id": 7, "src": "B"}],
+    "p1": [{"id": 2, "src": "B"}, {"id": 4, "src": "B"}, {"id": 6, "src": "B"}, {"id": 8, "src": "B"}],
+}
 
 
-def make_string_after_paged_method(items, *, max_per_call=None, after_field="created_at"):
-    """A subfeed method whose cursor is a string (e.g. timestamp).
-
-    Cursor semantics: `after` is the last returned `created_at` value (monotonic).
-    """
-
-    async def _method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
-        effective_limit = limit
-        if isinstance(max_per_call, int) and max_per_call > 0:
-            effective_limit = min(effective_limit, max_per_call)
-
-        after = next_page.after
-        start_idx = 0
-        if isinstance(after, str) and after:
-            # Find first item with created_at > after
-            for i, item in enumerate(items):
-                if str(item[after_field]) > after:
-                    start_idx = i
-                    break
-            else:
-                start_idx = len(items)
-
-        result_data = items[start_idx : start_idx + effective_limit]
-        has_next_page = (start_idx + len(result_data)) < len(items)
-
-        if result_data:
-            next_page.after = str(result_data[-1][after_field])
-        next_page.page += 1
-        return FeedResultClient(data=result_data, next_page=next_page, has_next_page=has_next_page)
-
-    return _method
+def _assert_winning_src_for_ids(data, ids, expected_src: str) -> None:
+    winning = {item["id"]: item["src"] for item in data}
+    assert all(winning[i] == expected_src for i in ids if i in winning)
 
 
-def make_profile_dict_after_method(
-    profiles_to_items,
-    *,
-    max_per_call=None,
-    after_key="after",
-):
-    """A subfeed method whose cursor is a dict of per-profile offsets.
-
-    Example shape: after = {"p1": 0, "p2": 0}
-    Cursor semantics: each profile offset increments as items are *read*.
-    """
-
-    profile_ids = list(profiles_to_items.keys())
-
-    async def _method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
-        effective_limit = limit
-        if isinstance(max_per_call, int) and max_per_call > 0:
-            effective_limit = min(effective_limit, max_per_call)
-
-        after = next_page.after
-        if not isinstance(after, dict):
-            after = {pid: 0 for pid in profile_ids}
-        else:
-            after = dict(after)
-            for pid in profile_ids:
-                after.setdefault(pid, 0)
-
-        result = []
-        has_next_page = False
-
-        # Build a cyclic iteration over profiles.
-        active_profiles = [pid for pid in profile_ids]
-
-        i = 0
-        while active_profiles and len(result) < effective_limit:
-            pid = active_profiles[i % len(active_profiles)]
-            idx = after.get(pid, 0)
-            items = profiles_to_items.get(pid, [])
-
-            if idx >= len(items):
-                # This profile is exhausted.
-                active_profiles.remove(pid)
-                continue
-
-            result.append(items[idx])
-            after[pid] = idx + 1
-            i += 1
-
-        # Determine if any profile still has unread items.
-        for pid in profile_ids:
-            if after.get(pid, 0) < len(profiles_to_items.get(pid, [])):
-                has_next_page = True
-                break
-
-        next_page.after = after
-        next_page.page += 1
-        return FeedResultClient(data=result, next_page=next_page, has_next_page=has_next_page)
-
-    return _method
-
-
-def _assert_cursor_monotonic_if_present(res_1, res_2, keys):
-    for key in keys:
-        if key not in res_1.next_page.data:
-            continue
-
-        assert key in res_2.next_page.data
-
-        after_1 = res_1.next_page.data[key].after
-        after_2 = res_2.next_page.data[key].after
-
-        if after_1 is None or after_2 is None:
-            continue
-
-        if isinstance(after_1, int) and isinstance(after_2, int):
-            assert after_2 >= after_1
-            continue
-
-        if isinstance(after_1, dict) and isinstance(after_2, dict):
-            continue
-
-        try:
-            assert after_2 >= after_1
-        except TypeError:
-            pass
-
-
-def _sources(data):
-    return [x.get("src") for x in data]
-
-
-def _ids(data):
-    return [x.get("id") for x in data]
-
-
-def _assert_no_dupes_in_page(data):
-    ids = _ids(data)
-    assert len(ids) == len(set(ids))
-
-
-def _assert_pages_no_overlap(res_1, res_2):
-    assert not (set(_ids(res_1.data)) & set(_ids(res_2.data)))
-
-
-def _inner_append_config(*, merger_id: str, subfeed_id: str, method_name: str, dedup_priority: int):
-    return {
-        "merger_id": merger_id,
-        "type": "merger_append",
-        # Important: dedup deletion priority must be visible at this node so parent mergers
-        # can fetch higher-priority subtrees first when a dedup wrapper is active.
-        "dedup_priority": dedup_priority,
-        "shuffle": False,
-        "items": [
-            {
-                "subfeed_id": subfeed_id,
-                "type": "subfeed",
-                "method_name": method_name,
-                "dedup_priority": dedup_priority,
-            }
-        ],
-    }
-
-
-def _build_deep_priority_tree_for_merger_type(*, merger_type: str):
-    """Return a deep tree config where low/high leaves overlap by id.
-
-    The inner leaves are wrapped into an append merger to ensure a "deep" tree even
-    when the outer merger is flat.
-    """
-
-    low = _inner_append_config(merger_id="inner_low", subfeed_id="sf_low", method_name="low", dedup_priority=0)
-    high = _inner_append_config(merger_id="inner_high", subfeed_id="sf_high", method_name="high", dedup_priority=100)
-
-    if merger_type == "merger_append":
-        return {
-            "merger_id": "outer_append",
-            "type": "merger_append",
-            "shuffle": False,
-            # Put low first intentionally; priority must still make high win for overlapping ids.
-            "items": [low, high],
-        }
-
-    if merger_type == "merger_distribute":
-        return {
-            "merger_id": "outer_dist",
-            "type": "merger_distribute",
-            "distribution_key": "user_id",
-            # Put low first intentionally.
-            "items": [low, high],
-        }
-
-    if merger_type == "merger_percentage":
-        return {
-            "merger_id": "outer_pct",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {"percentage": 50, "data": low},
-                {"percentage": 50, "data": high},
-            ],
-        }
-
-    if merger_type == "merger_percentage_gradient":
-        return {
-            "merger_id": "outer_grad",
-            "type": "merger_percentage_gradient",
-            "item_from": {"percentage": 60, "data": low},
-            "item_to": {"percentage": 40, "data": high},
-            "step": 20,
-            "size_to_step": 5,
-            "shuffle": False,
-        }
-
-    if merger_type == "merger_positional":
-        # High priority on positional branch so it must win duplicates.
-        high_pos = _inner_append_config(
-            merger_id="inner_pos_high",
-            subfeed_id="sf_high",
-            method_name="high",
-            dedup_priority=100,
-        )
-        low_def = _inner_append_config(
-            merger_id="inner_def_low",
-            subfeed_id="sf_low",
-            method_name="low",
-            dedup_priority=0,
-        )
-        return {
-            "merger_id": "outer_pos",
-            "type": "merger_positional",
-            "positions": [1, 3, 5, 7, 9, 11],
-            "positional": high_pos,
-            "default": low_def,
-        }
-
-    raise AssertionError(f"Unknown merger_type: {merger_type}")
+def _make_items_by_ids(src: str, ids, *, user_id_mod: int):
+    return [{"id": i, "user_id": f"u{i % user_id_mod}", "src": src} for i in ids]
 
 
 @pytest.mark.asyncio
@@ -263,68 +33,45 @@ async def test_dedup_positional_slot_ownership_cursor_backend() -> None:
     """
 
     # Default branch has early ids 1..3, which will be seen first.
-    default_items = [{"id": i, "src": "default"} for i in range(1, 300)]
+    default_items = dh.make_items("default", 1, 300)
 
     # Positional branch starts with duplicates 1..3; it must skip them and fetch 4.. instead.
-    positional_items = [{"id": i, "src": "pos"} for i in range(1, 300)]
+    positional_items = dh.make_items("pos", 1, 300)
 
     methods_dict = {
-        "default": make_offset_paged_method(default_items),
-        "pos": make_offset_paged_method(positional_items),
+        "default": dh.make_offset_paged_method(default_items),
+        "pos": dh.make_offset_paged_method(positional_items),
     }
 
-    config = {
-        "merger_id": "dedup_wrapper",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "max_refill_loops": 20,
-        "data": {
-            "merger_id": "positional_mix",
-            "type": "merger_positional",
+    config = dh._dedup_config(
+        "dedup_wrapper",
+        dh._positional_config(
+            "positional_mix",
             # Ensure positional inserts exist on both pages for limit=6:
             # page1 uses (1,3,5), page2 uses (7,9,11) which map to the same in-page slots.
-            "positions": [1, 3, 5, 7, 9, 11],
-            "positional": {"subfeed_id": "sf_pos", "type": "subfeed", "method_name": "pos"},
-            "default": {"subfeed_id": "sf_default", "type": "subfeed", "method_name": "default"},
-        },
-    }
+            positions=[1, 3, 5, 7, 9, 11],
+            positional=dh._subfeed("sf_pos", "pos"),
+            default=dh._subfeed("sf_default", "default"),
+        ),
+        max_refill_loops=20,
+    )
 
     merger = parse_model(MergerDeduplication, config)
 
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=6,
-        next_page=FeedResultNextPage(data={}),
-    )
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 6)
 
     assert len(res_1.data) == 6
-    _assert_no_dupes_in_page(res_1.data)
+    dh._assert_no_dupes_in_page(res_1.data)
 
     # Slot ownership: configured positions [1,3,5] are the positional branch.
-    assert _sources(res_1.data)[0] == "pos"
-    assert _sources(res_1.data)[2] == "pos"
-    assert _sources(res_1.data)[4] == "pos"
+    dh._assert_sources_at_positions(res_1.data, [1, 3, 5], "pos")
 
     # Next page: still no overlap across pages, and positional slots remain owned.
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=6,
-        next_page=res_1.next_page,
-    )
-
     assert len(res_2.data) == 6
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
+    dh._assert_sources_at_positions(res_2.data, [1, 3, 5], "pos")
 
-    assert _sources(res_2.data)[0] == "pos"
-    assert _sources(res_2.data)[2] == "pos"
-    assert _sources(res_2.data)[4] == "pos"
-
-    _assert_cursor_monotonic_if_present(res_1, res_2, keys=["sf_pos", "sf_default", "positional_mix", "dedup_wrapper"])
+    dh._assert_cursor_monotonic_if_present(res_1, res_2, keys=["sf_pos", "sf_default", "positional_mix", "dedup_wrapper"])
 
 
 @pytest.mark.asyncio
@@ -332,69 +79,37 @@ async def test_dedup_percentage_slot_ownership_cursor_backend() -> None:
     """Percentage mixing order must be preserved even with duplicates across sources."""
 
     # A is called first by the percentage merger; its ids will be seen before B.
-    a_items = [{"id": i, "src": "A"} for i in range(1, 300)]
+    a_items = dh.make_items("A", 1, 300)
 
     # B starts with duplicates 1..3; it must skip them and fetch unique tail items.
     # Same IDs as A to force cross-source duplicates.
-    b_items = [{"id": i, "src": "B"} for i in range(1, 300)]
+    b_items = dh.make_items("B", 1, 300)
 
-    methods_dict = {
-        "a": make_offset_paged_method(a_items),
-        "b": make_offset_paged_method(b_items),
-    }
-
-    config = {
-        "merger_id": "dedup_wrapper_pct",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
-            "merger_id": "pct_mix",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {"percentage": 50, "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"}},
-                {"percentage": 50, "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"}},
-            ],
-        },
-    }
-
+    config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
+        items_a=a_items,
+        items_b=b_items,
+        merger_id="dedup_wrapper_pct",
+        child_builder=lambda sf_a, sf_b: dh._percentage_config(
+            "pct_mix",
+            items=dh._percentage_items(sf_a, sf_b),
+        ),
+    )
     merger = parse_model(MergerDeduplication, config)
 
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=FeedResultNextPage(data={}),
-    )
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 10)
 
     assert len(res_1.data) == 10
-    _assert_no_dupes_in_page(res_1.data)
+    dh._assert_no_dupes_in_page(res_1.data)
 
     # Slot ownership: percentage merge alternates when list sizes are equal.
-    sources_1 = _sources(res_1.data)
-    assert sources_1[0] == "A"
-    assert sources_1[1] == "B"
-    assert sources_1[2] == "A"
-    assert sources_1[3] == "B"
-
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=res_1.next_page,
-    )
+    assert dh._sources(res_1.data)[:4] == ["A", "B", "A", "B"]
 
     assert len(res_2.data) == 10
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
 
-    sources_2 = _sources(res_2.data)
-    assert sources_2[0] == "A"
-    assert sources_2[1] == "B"
+    assert dh._sources(res_2.data)[:2] == ["A", "B"]
 
-    _assert_cursor_monotonic_if_present(res_1, res_2, keys=["sf_a", "sf_b", "pct_mix", "dedup_wrapper_pct"])
+    dh._assert_cursor_monotonic_if_present(res_1, res_2, keys=["sf_a", "sf_b", "pct_mix", "dedup_wrapper_pct"])
 
 
 @pytest.mark.asyncio
@@ -402,70 +117,35 @@ async def test_dedup_deep_tree_cursor_backend() -> None:
     """Dedup must work through deep merger trees (wrapping leaf methods)."""
 
     # Leaf sources: intentionally overlapping ids across different leaves.
-    p_items = [{"id": i, "src": "P"} for i in range(1, 30)]
-    d1_items = [{"id": i, "src": "D1"} for i in range(1, 30)]  # overlaps P
-    d2_items = [{"id": 100 + i, "src": "D2"} for i in range(1, 30)]
+    p_items = dh.make_items("P", 1, 30)
+    d1_items = dh.make_items("D1", 1, 30)  # overlaps P
+    d2_items = dh.make_items("D2", 1, 30, id_offset=100)
 
-    methods_dict = {
-        "p": make_offset_paged_method(p_items),
-        "d1": make_offset_paged_method(d1_items),
-        "d2": make_offset_paged_method(d2_items),
-    }
-
-    # Deep tree: Dedup -> Positional(default=Percentage(D1,D2), positional=SubFeed(P))
-    config = {
-        "merger_id": "dedup_deep",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
-            "merger_id": "pos_deep",
-            "type": "merger_positional",
-            # Ensure positional positions exist on both page 1 (1,4) and page 2 (9,12) for limit=8.
-            "positions": [1, 4, 9, 12],
-            "positional": {"subfeed_id": "sf_p", "type": "subfeed", "method_name": "p"},
-            "default": {
-                "merger_id": "pct_deep",
-                "type": "merger_percentage",
-                "shuffle": False,
-                "items": [
-                    {"percentage": 50, "data": {"subfeed_id": "sf_d1", "type": "subfeed", "method_name": "d1"}},
-                    {"percentage": 50, "data": {"subfeed_id": "sf_d2", "type": "subfeed", "method_name": "d2"}},
-                ],
-            },
-        },
-    }
+    config, methods_dict = dh._build_deep_positional_pct_dedup_merger(
+        items_p=p_items,
+        items_d1=d1_items,
+        items_d2=d2_items,
+        dedup_merger_id="dedup_deep",
+        pos_merger_id="pos_deep",
+        pct_merger_id="pct_deep",
+        # Ensure positional positions exist on both page 1 (1,4) and page 2 (9,12) for limit=8.
+        positions=[1, 4, 9, 12],
+    )
 
     merger = parse_model(MergerDeduplication, config)
 
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=8,
-        next_page=FeedResultNextPage(data={}),
-    )
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 8)
 
     assert len(res_1.data) == 8
-    _assert_no_dupes_in_page(res_1.data)
+    dh._assert_no_dupes_in_page(res_1.data)
 
     # Positional ownership must hold even with deep defaults.
-    assert _sources(res_1.data)[0] == "P"  # position 1
-    assert _sources(res_1.data)[3] == "P"  # position 4
-
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=8,
-        next_page=res_1.next_page,
-    )
+    dh._assert_sources_at_positions(res_1.data, [1, 4], "P")
 
     assert len(res_2.data) == 8
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
 
-    assert _sources(res_2.data)[0] == "P"
-    assert _sources(res_2.data)[3] == "P"
+    dh._assert_sources_at_positions(res_2.data, [1, 4], "P")
 
 
 @pytest.mark.parametrize(
@@ -492,32 +172,19 @@ async def test_dedup_deletion_priority_works_for_deep_trees_all_merger_types(mer
     # "priority" is unobservable because earlier branches can fill the page). We do that by
     # making the low branch short and duplicate-heavy.
     if merger_type in {"merger_append", "merger_distribute"}:
-        low_items = [
-            {"id": 1, "user_id": "u0", "src": "low"},
-            {"id": 2, "user_id": "u1", "src": "low"},
-            {"id": 3, "user_id": "u2", "src": "low"},
-            {"id": 1000, "user_id": "u0", "src": "low"},
-            {"id": 1001, "user_id": "u1", "src": "low"},
-        ]
-        high_items = [{"id": i, "user_id": f"u{i%3}", "src": "high"} for i in range(1, 200)]
+        low_items = _make_items_by_ids("low", [1, 2, 3, 1000, 1001], user_id_mod=3)
+        high_items = dh.make_items("high", 1, 200, user_id_mod=3)
     else:
-        low_items = [{"id": i, "user_id": f"u{i%3}", "src": "low"} for i in range(1, 200)]
-        high_items = [{"id": i, "user_id": f"u{i%3}", "src": "high"} for i in range(1, 200)]
+        low_items = dh.make_items("low", 1, 200, user_id_mod=3)
+        high_items = dh.make_items("high", 1, 200, user_id_mod=3)
 
     methods_dict = {
-        "low": make_offset_paged_method(low_items),
-        "high": make_offset_paged_method(high_items),
+        "low": dh.make_offset_paged_method(low_items),
+        "high": dh.make_offset_paged_method(high_items),
     }
 
-    deep_tree = _build_deep_priority_tree_for_merger_type(merger_type=merger_type)
-    config = {
-        "merger_id": f"dedup_priority_deep_{merger_type}",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": deep_tree,
-    }
+    deep_tree = dh._build_deep_priority_tree_for_merger_type(merger_type=merger_type)
+    config = dh._dedup_config(f"dedup_priority_deep_{merger_type}", deep_tree)
 
     merger = parse_model(MergerDeduplication, config)
     res = await merger.get_data(
@@ -527,15 +194,20 @@ async def test_dedup_deletion_priority_works_for_deep_trees_all_merger_types(mer
         next_page=FeedResultNextPage(data={}),
     )
 
-    _assert_no_dupes_in_page(res.data)
+    dh._assert_no_dupes_in_page(res.data)
+
+    # For append/distribute, priority is only observable if both branches contribute something.
+    if merger_type in {"merger_append", "merger_distribute"}:
+        sources = set(dh._sources(res.data))
+        assert "high" in sources
+        assert "low" in sources
 
     # Priority is about which source wins overlapping ids (not about output order).
-    winning = {item["id"]: item["src"] for item in res.data}
-    assert all(winning[i] == "high" for i in range(1, 6) if i in winning)
+    _assert_winning_src_for_ids(res.data, range(1, 6), "high")
 
     # Placement invariant for positional: positional slots must still be owned by positional branch.
     if merger_type == "merger_positional":
-        sources = _sources(res.data)
+        sources = dh._sources(res.data)
         assert sources[0] == "high"
         assert sources[2] == "high"
         assert sources[4] == "high"
@@ -550,52 +222,28 @@ async def test_dedup_overfetch_factor_does_not_skip_unseen_items_in_deep_tree_cu
     un-inspected items. In a deep tree, this must hold for all descendant SubFeeds.
     """
 
-    p_items = [{"id": 1000 + i, "src": "P"} for i in range(1, 200)]
-    d1_items = [{"id": i, "src": "D1"} for i in range(1, 200)]
-    d2_items = [{"id": 500 + i, "src": "D2"} for i in range(1, 200)]
+    p_items = dh.make_items("P", 1, 200, id_offset=1000)
+    d1_items = dh.make_items("D1", 1, 200)
+    d2_items = dh.make_items("D2", 1, 200, id_offset=500)
 
-    methods_dict = {
-        "p": make_offset_paged_method(p_items),
-        "d1": make_offset_paged_method(d1_items),
-        "d2": make_offset_paged_method(d2_items),
-    }
-
-    config = {
-        "merger_id": "dedup_overfetch",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "overfetch_factor": 3,
-        "data": {
-            "merger_id": "pos_overfetch",
-            "type": "merger_positional",
-            "positions": [1, 4, 9, 12],
-            "positional": {"subfeed_id": "sf_p", "type": "subfeed", "method_name": "p"},
-            "default": {
-                "merger_id": "pct_overfetch",
-                "type": "merger_percentage",
-                "shuffle": False,
-                "items": [
-                    {"percentage": 50, "data": {"subfeed_id": "sf_d1", "type": "subfeed", "method_name": "d1"}},
-                    {"percentage": 50, "data": {"subfeed_id": "sf_d2", "type": "subfeed", "method_name": "d2"}},
-                ],
-            },
-        },
-    }
+    config, methods_dict = dh._build_deep_positional_pct_dedup_merger(
+        items_p=p_items,
+        items_d1=d1_items,
+        items_d2=d2_items,
+        dedup_merger_id="dedup_overfetch",
+        pos_merger_id="pos_overfetch",
+        pct_merger_id="pct_overfetch",
+        positions=[1, 4, 9, 12],
+        overfetch_factor=3,
+    )
 
     merger = parse_model(MergerDeduplication, config)
 
-    # Page 1
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=8,
-        next_page=FeedResultNextPage(data={}),
-    )
+    # Page 1/2
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 8)
 
     assert len(res_1.data) == 8
-    _assert_no_dupes_in_page(res_1.data)
+    dh._assert_no_dupes_in_page(res_1.data)
 
     # Dedup merger cursor must exist and advance page.
     assert "dedup_overfetch" in res_1.next_page.data
@@ -613,16 +261,8 @@ async def test_dedup_overfetch_factor_does_not_skip_unseen_items_in_deep_tree_cu
     assert res_1.next_page.data["sf_d2"].after == 4
 
     # Page 2 (monotonic advancement, still no over-advancement)
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=8,
-        next_page=res_1.next_page,
-    )
-
     assert len(res_2.data) == 8
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
 
     assert res_2.next_page.data["dedup_overfetch"].page == 3
     assert res_2.next_page.data["pos_overfetch"].page == 3
@@ -631,7 +271,7 @@ async def test_dedup_overfetch_factor_does_not_skip_unseen_items_in_deep_tree_cu
     assert res_2.next_page.data["sf_d1"].after == 8
     assert res_2.next_page.data["sf_d2"].after == 8
 
-    _assert_cursor_monotonic_if_present(
+    dh._assert_cursor_monotonic_if_present(
         res_1,
         res_2,
         keys=["sf_p", "sf_d1", "sf_d2", "pos_overfetch", "dedup_overfetch"],
@@ -640,17 +280,10 @@ async def test_dedup_overfetch_factor_does_not_skip_unseen_items_in_deep_tree_cu
 
 @pytest.mark.asyncio
 async def test_dedup_page_zero_resets_seen_and_descendant_cursors() -> None:
-    items = [{"id": i, "src": "S"} for i in range(1, 50)]
-    methods_dict = {"s": make_offset_paged_method(items)}
+    items = dh.make_items("S", 1, 50)
+    methods_dict = {"s": dh.make_offset_paged_method(items)}
 
-    config = {
-        "merger_id": "dedup_reset",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {"subfeed_id": "sf_stream", "type": "subfeed", "method_name": "s"},
-    }
+    config = dh._dedup_config("dedup_reset", dh._subfeed("sf_stream", "s"))
 
     merger = parse_model(MergerDeduplication, config)
 
@@ -660,7 +293,7 @@ async def test_dedup_page_zero_resets_seen_and_descendant_cursors() -> None:
         limit=5,
         next_page=FeedResultNextPage(data={}),
     )
-    assert _ids(res_1.data) == [1, 2, 3, 4, 5]
+    assert dh._ids(res_1.data) == [1, 2, 3, 4, 5]
 
     # Simulate client "full reload": page=0 for the dedup merger.
     # Also include the stale descendant cursor; dedup should clear it.
@@ -671,79 +304,17 @@ async def test_dedup_page_zero_resets_seen_and_descendant_cursors() -> None:
         next_page=FeedResultNextPage(
             data={
                 "dedup_reset": FeedResultNextPageInside(page=0, after=res_1.next_page.data["dedup_reset"].after),
-                "sf_stream": res_1.next_page.data["sf_stream"],
+                # Use a deliberately bogus descendant cursor; the dedup wrapper must ignore/reset it.
+                "sf_stream": FeedResultNextPageInside(page=99, after=999),
             }
         ),
     )
 
     # Must restart from the beginning.
-    assert _ids(res_2.data) == [1, 2, 3, 4, 5]
-
-
-@pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
-@pytest.mark.asyncio
-async def test_dedup_redis_backend_cross_page(redis_client) -> None:
-    items_a = [{"id": i, "src": "A"} for i in range(1, 300)]
-    # Same IDs as A to force cross-source duplicates.
-    items_b = [{"id": i, "src": "B"} for i in range(1, 300)]
-
-    methods_dict = {
-        "a": make_offset_paged_method(items_a),
-        "b": make_offset_paged_method(items_b),
-    }
-
-    config = {
-        "merger_id": "dedup_redis",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "redis",
-        "state_ttl_seconds": 60,
-        "data": {
-            "merger_id": "pct_mix",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {"percentage": 50, "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"}},
-                {"percentage": 50, "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"}},
-            ],
-        },
-    }
-
-    merger = parse_model(MergerDeduplication, config)
-
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=FeedResultNextPage(data={}),
-        redis_client=redis_client,
-        custom_deduplication_key="t1",
-    )
-
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=res_1.next_page,
-        redis_client=redis_client,
-        custom_deduplication_key="t1",
-    )
-
-    _assert_no_dupes_in_page(res_1.data)
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
-
-    # Redis backend should not store seen ids in cursor after.
-    assert "dedup_redis" in res_2.next_page.data
-    assert res_2.next_page.data["dedup_redis"].after is None
-
-    # Ensure state is persisted in Redis.
-    key = "dedup:dedup_redis:u:t1"
-    members = redis_client.zrange(key, 0, -1)
-    if inspect.iscoroutine(members):
-        members = await members
-    assert len(members) >= len(set(_ids(res_1.data) + _ids(res_2.data)))
-
+    assert dh._ids(res_2.data) == [1, 2, 3, 4, 5]
+    # And must not propagate the bogus descendant cursor.
+    assert res_2.next_page.data["sf_stream"].after == 5
+    assert res_2.next_page.data["sf_stream"].page == 2
 
 @pytest.mark.asyncio
 async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf_cursor_exactly() -> None:
@@ -754,59 +325,38 @@ async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf
     """
 
     a_items = [{"id": 1, "src": "A"}, {"id": 2, "src": "A"}]
-    b_items = [{"id": i, "src": "B"} for i in range(1, 50)]
+    b_items = dh.make_items("B", 1, 50)
 
-    methods_dict = {
-        "a": make_offset_paged_method(a_items),
-        # Force multiple internal calls.
-        "b": make_offset_paged_method(b_items, max_per_call=1),
-    }
-
-    config = {
-        "merger_id": "dedup_append_pages",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "max_refill_loops": 50,
-        "data": {
-            "merger_id": "append_mix",
-            "type": "merger_append",
-            "shuffle": False,
-            "items": [
-                {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"},
-                {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-            ],
-        },
-    }
-
+    config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
+        items_a=a_items,
+        items_b=b_items,
+        merger_id="dedup_append_pages",
+        child_builder=lambda sf_a, sf_b: dh._append_config("append_mix", [sf_a, sf_b]),
+        spec_b=dh._two_subfeed_spec(name="b", subfeed_id="sf_b", max_per_call=1),
+        dedup_kwargs={"max_refill_loops": 50},
+    )
     merger = parse_model(MergerDeduplication, config)
 
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=5,
-        next_page=FeedResultNextPage(data={}),
-    )
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 5)
 
-    assert _ids(res_1.data) == [1, 2, 3, 4, 5]
+    assert dh._ids(res_1.data) == [1, 2, 3, 4, 5]
+    assert dh._sources(res_1.data) == ["A", "A", "B", "B", "B"]
 
     assert res_1.next_page.data["dedup_append_pages"].page == 2
 
     # In default arbitrate mode, B only needs to scan far enough to fill the remaining
     # portion of the page after arbitration (here: 3 items: ids 3..5).
     assert res_1.next_page.data["sf_b"].after == 5
+    b_contributed = sum(1 for x in res_1.data if x.get("src") == "B")
+    assert res_1.next_page.data["sf_b"].after > b_contributed
 
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=5,
-        next_page=res_1.next_page,
-    )
+    # A is exhausted after 2 reads; ensure cursor reflects that.
+    assert res_1.next_page.data["sf_a"].after == 2
 
     assert len(res_2.data) == 5
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
+    # Across two pages, B should have advanced exactly 5 more items.
+    assert res_2.next_page.data["sf_b"].after == 10
 
 
 @pytest.mark.asyncio
@@ -815,45 +365,33 @@ async def test_dedup_arbitrate_mode_runs_parallel_prefetch_and_arbitrates_winner
     started_b = asyncio.Event()
     release = asyncio.Event()
 
-    items_a = [{"id": i, "src": "A"} for i in range(1, 200)]
-    items_b = [{"id": i, "src": "B"} for i in range(1, 200)]
+    items_a = dh.make_items("A", 1, 200)
+    items_b = dh.make_items("B", 1, 200)
 
-    async def method_a(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
-        started_a.set()
-        await release.wait()
-        offset = int(next_page.after or 0)
-        data = items_a[offset : offset + limit]
-        next_page.after = offset + len(data)
-        next_page.page += 1
-        return FeedResultClient(data=data, next_page=next_page, has_next_page=True)
+    def make_method(*, items, started_event):
+        async def _method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+            started_event.set()
+            await release.wait()
+            offset = int(next_page.after or 0)
+            data = items[offset : offset + limit]
+            next_page.after = offset + len(data)
+            next_page.page += 1
+            return FeedResultClient(data=data, next_page=next_page, has_next_page=True)
 
-    async def method_b(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
-        started_b.set()
-        await release.wait()
-        offset = int(next_page.after or 0)
-        data = items_b[offset : offset + limit]
-        next_page.after = offset + len(data)
-        next_page.page += 1
-        return FeedResultClient(data=data, next_page=next_page, has_next_page=True)
+        return _method
 
-    methods_dict = {"a": method_a, "b": method_b}
-
-    config = {
-        "merger_id": "dedup_arbitrate",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
-            "merger_id": "pct",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {"percentage": 50, "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"}},
-                {"percentage": 50, "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"}},
-            ],
-        },
+    methods_dict = {
+        "a": make_method(items=items_a, started_event=started_a),
+        "b": make_method(items=items_b, started_event=started_b),
     }
+
+    config = dh._dedup_config(
+        "dedup_arbitrate",
+        dh._percentage_config(
+            "pct",
+            items=dh._percentage_items(dh._subfeed("sf_a", "a"), dh._subfeed("sf_b", "b")),
+        ),
+    )
 
     merger = parse_model(MergerDeduplication, config)
 
@@ -869,10 +407,9 @@ async def test_dedup_arbitrate_mode_runs_parallel_prefetch_and_arbitrates_winner
     res = await asyncio.wait_for(task, timeout=2)
 
     assert len(res.data) == 10
-    _assert_no_dupes_in_page(res.data)
+    dh._assert_no_dupes_in_page(res.data)
     # With equal priorities, stable tie-breaker should pick A (first branch) for overlapping keys.
-    winning = {item["id"]: item["src"] for item in res.data}
-    assert all(winning[i] == "A" for i in range(1, 6))
+    _assert_winning_src_for_ids(res.data, range(1, 6), "A")
 
 
 @pytest.mark.asyncio
@@ -883,41 +420,26 @@ async def test_dedup_refill_loops_advance_dict_after_cursor_not_just_page() -> N
     a_items = [{"id": 1, "src": "A"}, {"id": 2, "src": "A"}]
 
     # B produces ids 1.. in round-robin across profiles; cursor is per-profile offsets.
-    b_profiles = {
-        "p0": [{"id": 1, "src": "B"}, {"id": 3, "src": "B"}, {"id": 5, "src": "B"}, {"id": 7, "src": "B"}],
-        "p1": [{"id": 2, "src": "B"}, {"id": 4, "src": "B"}, {"id": 6, "src": "B"}, {"id": 8, "src": "B"}],
-    }
+    b_profiles = PROFILES_B_1_TO_8
 
     methods_dict = {
-        "a": make_offset_paged_method(a_items),
-        "b": make_profile_dict_after_method(b_profiles),
+        "a": dh.make_offset_paged_method(a_items),
+        "b": dh.make_profile_dict_after_method(b_profiles),
     }
 
     # Use a percentage merger so B is asked for a small limit (2 items for limit=4).
     # This forces refill loops when B's first batch is all duplicates.
-    config = {
-        "merger_id": "dedup_dict_after",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "max_refill_loops": 50,
-        "data": {
-            "merger_id": "pct_mix",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {
-                    "percentage": 50,
-                    "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a", "dedup_priority": 100},
-                },
-                {
-                    "percentage": 50,
-                    "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b", "dedup_priority": 0},
-                },
-            ],
-        },
-    }
+    config = dh._dedup_config(
+        "dedup_dict_after",
+        dh._percentage_config(
+            "pct_mix",
+            items=dh._percentage_items(
+                dh._subfeed("sf_a", "a", dedup_priority=100),
+                dh._subfeed("sf_b", "b", dedup_priority=0),
+            ),
+        ),
+        max_refill_loops=50,
+    )
 
     merger = parse_model(MergerDeduplication, config)
     res = await merger.get_data(
@@ -928,8 +450,8 @@ async def test_dedup_refill_loops_advance_dict_after_cursor_not_just_page() -> N
     )
 
     assert len(res.data) == 4
-    _assert_no_dupes_in_page(res.data)
-    assert set(_ids(res.data)) == {1, 2, 3, 4}
+    dh._assert_no_dupes_in_page(res.data)
+    assert set(dh._ids(res.data)) == {1, 2, 3, 4}
     assert "sf_b" in res.next_page.data
     assert isinstance(res.next_page.data["sf_b"].after, dict)
 
@@ -944,24 +466,17 @@ async def test_dedup_overfetch_does_not_overadvance_non_int_after_cursor() -> No
     """overfetch_factor must not cause over-advancement for non-rewindable cursors."""
 
     # Single subfeed with dict after cursor; no dedup skips should happen.
-    profiles = {
-        "p0": [{"id": 1, "src": "B"}, {"id": 3, "src": "B"}, {"id": 5, "src": "B"}, {"id": 7, "src": "B"}],
-        "p1": [{"id": 2, "src": "B"}, {"id": 4, "src": "B"}, {"id": 6, "src": "B"}, {"id": 8, "src": "B"}],
-    }
+    profiles = PROFILES_B_1_TO_8
 
     methods_dict = {
-        "b": make_profile_dict_after_method(profiles),
+        "b": dh.make_profile_dict_after_method(profiles),
     }
 
-    config = {
-        "merger_id": "dedup_nonint_overfetch",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "overfetch_factor": 5,
-        "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-    }
+    config = dh._dedup_config(
+        "dedup_nonint_overfetch",
+        dh._subfeed("sf_b", "b"),
+        overfetch_factor=5,
+    )
 
     merger = parse_model(MergerDeduplication, config)
     res = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=4, next_page=FeedResultNextPage(data={}))
@@ -984,39 +499,21 @@ async def test_dedup_overfetch_rewinds_offset_cursor_when_first_batch_all_duplic
       so it doesn't skip items.
     """
 
-    items_a = [{"id": i, "src": "A"} for i in range(1, 300)]
-    items_b = [{"id": i, "src": "B"} for i in range(1, 300)]
+    items_a = dh.make_items("A", 1, 300)
+    items_b = dh.make_items("B", 1, 300)
 
-    methods_dict = {
-        "a": make_offset_paged_method(items_a),
-        "b": make_offset_paged_method(items_b),
-    }
-
-    config = {
-        "merger_id": "dedup_overfetch_rewind",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "overfetch_factor": 3,
-        "max_refill_loops": 20,
-        "data": {
-            "merger_id": "pct_mix",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {
-                    "percentage": 50,
-                    "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a", "dedup_priority": 100},
-                },
-                {
-                    "percentage": 50,
-                    "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b", "dedup_priority": 0},
-                },
-            ],
-        },
-    }
-
+    config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
+        items_a=items_a,
+        items_b=items_b,
+        merger_id="dedup_overfetch_rewind",
+        child_builder=lambda sf_a, sf_b: dh._percentage_config(
+            "pct_mix",
+            items=dh._percentage_items(sf_a, sf_b),
+        ),
+        spec_a=dh._two_subfeed_spec(dedup_priority=100),
+        spec_b=dh._two_subfeed_spec(name="b", subfeed_id="sf_b", dedup_priority=0),
+        dedup_kwargs={"overfetch_factor": 3, "max_refill_loops": 20},
+    )
     merger = parse_model(MergerDeduplication, config)
     res = await merger.get_data(
         methods_dict=methods_dict,
@@ -1026,12 +523,11 @@ async def test_dedup_overfetch_rewinds_offset_cursor_when_first_batch_all_duplic
     )
 
     assert len(res.data) == 10
-    _assert_no_dupes_in_page(res.data)
+    dh._assert_no_dupes_in_page(res.data)
 
     # A provides 1..5, B must provide 6..10.
-    winning = {item["id"]: item["src"] for item in res.data}
-    assert all(winning[i] == "A" for i in range(1, 6))
-    assert all(winning[i] == "B" for i in range(6, 11))
+    _assert_winning_src_for_ids(res.data, range(1, 6), "A")
+    _assert_winning_src_for_ids(res.data, range(6, 11), "B")
 
     # Cursor rewind check:
     # - First loop for B reads 5 duplicates -> after becomes 5
@@ -1039,147 +535,132 @@ async def test_dedup_overfetch_rewinds_offset_cursor_when_first_batch_all_duplic
     assert res.next_page.data["sf_b"].after == 10
 
 
+@pytest.mark.parametrize(
+    "items_a,items_b,min_b_id",
+    [
+        (dh.make_items("A", 1, 4, user_id_mod=2), dh.make_items("B", 1, 200, user_id_mod=2), 4),
+        (dh.make_items("A", 1, 200, user_id_mod=3), dh.make_items("B", 1, 200, user_id_mod=3), None),
+    ],
+)
 @pytest.mark.asyncio
-async def test_dedup_distribute_cursor_backend_across_pages_preserves_source_refill() -> None:
+async def test_dedup_distribute_cursor_backend_across_pages_preserves_source_refill(
+    items_a, items_b, min_b_id
+) -> None:
     """Distribute: duplicates skipped per-leaf and page slices don't overlap."""
 
-    # A is short so B must contribute.
-    items_a = [{"id": i, "user_id": f"u{i%2}", "src": "A"} for i in range(1, 4)]
-    # B overlaps A by id and continues.
-    items_b = [{"id": i, "user_id": f"u{i%2}", "src": "B"} for i in range(1, 200)]
-
-    methods_dict = {
-        "a": make_offset_paged_method(items_a),
-        "b": make_offset_paged_method(items_b),
-    }
-
-    config = {
-        "merger_id": "dedup_dist_pages",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
-            "merger_id": "dist",
-            "type": "merger_distribute",
-            "distribution_key": "user_id",
-            "items": [
-                {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"},
-                {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-            ],
-        },
-    }
-
-    merger = parse_model(MergerDeduplication, config)
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={})
+    config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
+        items_a=items_a,
+        items_b=items_b,
+        merger_id="dedup_dist_pages",
+        child_builder=lambda sf_a, sf_b: dh._distribute_config("dist", [sf_a, sf_b]),
     )
-    res_2 = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=res_1.next_page)
+    merger = parse_model(MergerDeduplication, config)
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 10)
 
     assert len(res_1.data) == 10
     assert len(res_2.data) == 10
-    _assert_no_dupes_in_page(res_1.data)
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
 
     # Placement/refill: B must skip duplicate ids 1..3 and still fill the page.
-    b_ids_1 = [x["id"] for x in res_1.data if x.get("src") == "B"]
-    assert b_ids_1 and min(b_ids_1) >= 4
+    if min_b_id is not None:
+        b_ids_1 = [x["id"] for x in res_1.data if x.get("src") == "B"]
+        assert b_ids_1 and min(b_ids_1) >= min_b_id
 
 
 @pytest.mark.asyncio
 async def test_dedup_percentage_gradient_cursor_backend_across_pages() -> None:
-    a_items = [{"id": i, "src": "A"} for i in range(1, 300)]
-    b_items = [{"id": i, "src": "B"} for i in range(1, 30)] + [{"id": 1000 + i, "src": "B"} for i in range(1, 300)]
+    a_items = dh.make_items("A", 1, 300)
+    b_items = dh.make_items("B", 1, 30) + dh.make_items("B", 1, 300, id_offset=1000)
 
     methods_dict = {
-        "a": make_offset_paged_method(a_items),
-        "b": make_offset_paged_method(b_items),
+        "a": dh.make_offset_paged_method(a_items),
+        "b": dh.make_offset_paged_method(b_items),
     }
 
-    config = {
-        "merger_id": "dedup_grad_pages",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "max_refill_loops": 50,
-        "data": {
-            "merger_id": "grad_mix",
-            "type": "merger_percentage_gradient",
-            "item_from": {"percentage": 60, "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"}},
-            "item_to": {"percentage": 40, "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"}},
-            "step": 20,
-            "size_to_step": 5,
-            "shuffle": False,
-        },
-    }
+    config = dh._dedup_config(
+        "dedup_grad_pages",
+        dh._gradient_config(
+            "grad_mix",
+            item_from={"percentage": 60, "data": dh._subfeed("sf_a", "a")},
+            item_to={"percentage": 40, "data": dh._subfeed("sf_b", "b")},
+            step=20,
+            size_to_step=5,
+            shuffle=False,
+        ),
+        max_refill_loops=50,
+    )
 
     merger = parse_model(MergerDeduplication, config)
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={})
-    )
-    res_2 = await merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=res_1.next_page)
+    res_1, res_2 = await dh._run_two_pages(merger, methods_dict, 10)
 
-    _assert_no_dupes_in_page(res_1.data)
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
+
+    sources = dh._sources(res_1.data)
+    assert sources == ["A", "A", "A", "B", "B", "A", "A", "B", "B", "B"]
 
     # Gradient merger cursor should exist and advance.
     assert res_1.next_page.data["grad_mix"].page == 2
     assert res_2.next_page.data["grad_mix"].page == 3
 
 
+@pytest.mark.parametrize(
+    "merger_id,custom_deduplication_key,items_a,items_b,child_builder",
+    [
+        (
+            "dedup_redis",
+            "t1",
+            dh.make_items("A", 1, 300),
+            dh.make_items("B", 1, 300),  # Same IDs as A to force cross-source duplicates.
+            lambda sf_a, sf_b: dh._percentage_config("pct_mix", items=dh._percentage_items(sf_a, sf_b)),
+        ),
+        (
+            "dedup_redis_append",
+            "t2",
+            dh.make_items("A", 1, 20),
+            dh.make_items("B", 1, 300),
+            lambda sf_a, sf_b: dh._append_config("append_mix", [sf_a, sf_b]),
+        ),
+    ],
+)
 @pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
 @pytest.mark.asyncio
-async def test_dedup_redis_backend_cross_page_append(redis_client) -> None:
-    items_a = [{"id": i, "src": "A"} for i in range(1, 20)]
-    items_b = [{"id": i, "src": "B"} for i in range(1, 300)]
-
-    methods_dict = {
-        "a": make_offset_paged_method(items_a),
-        "b": make_offset_paged_method(items_b),
-    }
-
-    config = {
-        "merger_id": "dedup_redis_append",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "redis",
-        "state_ttl_seconds": 60,
-        "data": {
-            "merger_id": "append_mix",
-            "type": "merger_append",
-            "shuffle": False,
-            "items": [
-                {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"},
-                {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-            ],
-        },
-    }
-
+async def test_dedup_redis_backend_cross_page(
+    redis_client,
+    merger_id,
+    custom_deduplication_key,
+    items_a,
+    items_b,
+    child_builder,
+) -> None:
+    config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
+        items_a=items_a,
+        items_b=items_b,
+        merger_id=merger_id,
+        child_builder=child_builder,
+        dedup_kwargs={"state_backend": "redis", "state_ttl_seconds": 60},
+    )
     merger = parse_model(MergerDeduplication, config)
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=FeedResultNextPage(data={}),
+
+    res_1, res_2 = await dh._run_two_pages(
+        merger,
+        methods_dict,
+        10,
         redis_client=redis_client,
-        custom_deduplication_key="t2",
-    )
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=res_1.next_page,
-        redis_client=redis_client,
-        custom_deduplication_key="t2",
+        custom_deduplication_key=custom_deduplication_key,
     )
 
-    _assert_no_dupes_in_page(res_1.data)
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
-    assert res_2.next_page.data["dedup_redis_append"].after is None
+    dh._assert_two_pages_no_dupes(res_1, res_2)
+
+    # Redis backend should not store seen ids in cursor after.
+    assert merger_id in res_2.next_page.data
+    assert res_2.next_page.data[merger_id].after is None
+
+    # Ensure state is persisted in Redis.
+    key = f"dedup:{merger_id}:u:{custom_deduplication_key}"
+    members = redis_client.zrange(key, 0, -1)
+    if inspect.iscoroutine(members):
+        members = await members
+    assert len(members) >= len(set(dh._ids(res_1.data) + dh._ids(res_2.data)))
 
 
 @pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
@@ -1188,116 +669,46 @@ async def test_dedup_wrapper_with_view_session_merger(redis_client) -> None:
     """Dedup wrapper must work when the child is a view_session merger."""
 
     # Two leaves with overlapping ids; view_session computes a session once.
-    items_low = [{"id": i, "src": "low"} for i in range(1, 100)]
-    items_high = [{"id": i, "src": "high"} for i in range(1, 100)]
+    items_low = dh.make_items("low", 1, 100)
+    items_high = dh.make_items("high", 1, 100)
 
-    methods_dict = {
-        "low": make_offset_paged_method(items_low),
-        "high": make_offset_paged_method(items_high),
-    }
+    methods_dict, subfeed_low, subfeed_high = dh._build_two_subfeed_methods(
+        items_low,
+        items_high,
+        spec_a=dh._two_subfeed_spec(name="low", subfeed_id="sf_low", dedup_priority=0),
+        spec_b=dh._two_subfeed_spec(name="high", subfeed_id="sf_high", dedup_priority=100),
+    )
 
-    config = {
-        "merger_id": "dedup_vs",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
+    config = dh._dedup_config(
+        "dedup_vs",
+        {
             "merger_id": "vs",
             "type": "merger_view_session",
             "session_size": 30,
             "session_live_time": 60,
             "deduplicate": False,
             "shuffle": False,
-            "data": {
-                "merger_id": "pct",
-                "type": "merger_percentage",
-                "shuffle": False,
-                "items": [
-                    {
-                        "percentage": 50,
-                        "data": {"subfeed_id": "sf_low", "type": "subfeed", "method_name": "low", "dedup_priority": 0},
-                    },
-                    {
-                        "percentage": 50,
-                        "data": {
-                            "subfeed_id": "sf_high",
-                            "type": "subfeed",
-                            "method_name": "high",
-                            "dedup_priority": 100,
-                        },
-                    },
-                ],
-            },
+            "data": dh._percentage_config(
+                "pct",
+                items=dh._percentage_items(subfeed_low, subfeed_high),
+            ),
         },
-    }
+    )
 
     merger = parse_model(MergerDeduplication, config)
 
-    res_1 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=FeedResultNextPage(data={}),
+    res_1, res_2 = await dh._run_two_pages(
+        merger,
+        methods_dict,
+        10,
         redis_client=redis_client,
         custom_view_session_key="vs1",
     )
 
-    res_2 = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=res_1.next_page,
-        redis_client=redis_client,
-        custom_view_session_key="vs1",
-    )
-
-    _assert_no_dupes_in_page(res_1.data)
-    _assert_no_dupes_in_page(res_2.data)
-    _assert_pages_no_overlap(res_1, res_2)
+    dh._assert_two_pages_no_dupes(res_1, res_2)
 
     # Deletion priority: for the overlapping early ids, the winning entity must be from high.
-    winning = {item["id"]: item["src"] for item in (res_1.data + res_2.data)}
-    assert all(winning[i] == "high" for i in range(1, 11) if i in winning)
-
-
-@pytest.mark.asyncio
-async def test_dedup_append_distribute_cursor_backend_no_dupes() -> None:
-    items_a = [{"id": i, "user_id": f"u{i%3}", "src": "A"} for i in range(1, 200)]
-    items_b = [{"id": i, "user_id": f"u{i%3}", "src": "B"} for i in range(1, 200)]
-
-    methods_dict = {
-        "a": make_offset_paged_method(items_a),
-        "b": make_offset_paged_method(items_b),
-    }
-
-    config = {
-        "merger_id": "dedup_dist",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
-            "merger_id": "dist",
-            "type": "merger_distribute",
-            "distribution_key": "user_id",
-            "items": [
-                {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"},
-                {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-            ],
-        },
-    }
-
-    merger = parse_model(MergerDeduplication, config)
-    res = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=30,
-        next_page=FeedResultNextPage(data={}),
-    )
-
-    assert len(res.data) == 30
-    _assert_no_dupes_in_page(res.data)
+    _assert_winning_src_for_ids(res_1.data + res_2.data, range(1, 11), "high")
 
 
 @pytest.mark.asyncio
@@ -1308,37 +719,20 @@ async def test_dedup_in_page_deletion_priority_keeps_high_priority_even_if_confi
     The "high" branch is second in config, but has higher dedup_priority.
     """
 
-    low_items = [{"id": i, "src": "low"} for i in range(1, 200)]
-    high_items = [{"id": i, "src": "high"} for i in range(1, 200)]
+    low_items = dh.make_items("low", 1, 200)
+    high_items = dh.make_items("high", 1, 200)
 
-    methods_dict = {
-        "low": make_offset_paged_method(low_items),
-        "high": make_offset_paged_method(high_items),
-    }
-
-    config = {
-        "merger_id": "dedup_priority",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "data": {
-            "merger_id": "pct",
-            "type": "merger_percentage",
-            "shuffle": False,
-            "items": [
-                {
-                    "percentage": 50,
-                    "data": {"subfeed_id": "sf_low", "type": "subfeed", "method_name": "low", "dedup_priority": 0},
-                },
-                {
-                    "percentage": 50,
-                    "data": {"subfeed_id": "sf_high", "type": "subfeed", "method_name": "high", "dedup_priority": 100},
-                },
-            ],
-        },
-    }
-
+    config, methods_dict, _, _ = dh._build_two_subfeed_dedup_merger(
+        items_a=low_items,
+        items_b=high_items,
+        merger_id="dedup_priority",
+        child_builder=lambda sf_a, sf_b: dh._percentage_config(
+            "pct",
+            items=dh._percentage_items(sf_a, sf_b),
+        ),
+        spec_a=dh._two_subfeed_spec(name="low", subfeed_id="sf_low", dedup_priority=0),
+        spec_b=dh._two_subfeed_spec(name="high", subfeed_id="sf_high", dedup_priority=100),
+    )
     merger = parse_model(MergerDeduplication, config)
     res = await merger.get_data(
         methods_dict=methods_dict,
@@ -1347,127 +741,9 @@ async def test_dedup_in_page_deletion_priority_keeps_high_priority_even_if_confi
         next_page=FeedResultNextPage(data={}),
     )
 
-    _assert_no_dupes_in_page(res.data)
+    dh._assert_no_dupes_in_page(res.data)
     # Priority is about which source "wins" for a given dedup_key, not about output order.
     # With 50/50 limits, the high-priority branch should supply ids 1..5, while the low-priority
     # branch will be advanced to avoid duplicates.
-    winning = {item["id"]: item["src"] for item in res.data}
-    assert all(winning[i] == "high" for i in range(1, 6))
+    _assert_winning_src_for_ids(res.data, range(1, 6), "high")
 
-
-@pytest.mark.asyncio
-async def test_dedup_percentage_gradient_slot_ownership_cursor_backend() -> None:
-    """Dedup must preserve gradient chunking semantics.
-
-    For limit=10, size_to_step=5, from/to percentages should yield chunks:
-    - first 5: 3 from A, 2 from B
-    - next 5: 2 from A, 3 from B
-    Dedup must refill within each leaf so these chunk sizes remain true.
-    """
-
-    a_items = [{"id": i, "src": "A"} for i in range(1, 300)]
-    # Start with duplicates, then provide unique tail.
-    b_items = [{"id": i, "src": "B"} for i in range(1, 30)] + [{"id": 1000 + i, "src": "B"} for i in range(1, 300)]
-
-    methods_dict = {
-        "a": make_offset_paged_method(a_items),
-        "b": make_offset_paged_method(b_items),
-    }
-
-    config = {
-        "merger_id": "dedup_gradient",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "max_refill_loops": 50,
-        "data": {
-            "merger_id": "grad_mix",
-            "type": "merger_percentage_gradient",
-            "item_from": {
-                "percentage": 60,
-                "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"},
-            },
-            "item_to": {
-                "percentage": 40,
-                "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-            },
-            "step": 20,
-            "size_to_step": 5,
-            "shuffle": False,
-        },
-    }
-
-    merger = parse_model(MergerDeduplication, config)
-    res = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=10,
-        next_page=FeedResultNextPage(data={}),
-    )
-
-    assert len(res.data) == 10
-    _assert_no_dupes_in_page(res.data)
-
-    sources = _sources(res.data)
-    assert sources[:3] == ["A", "A", "A"]
-    assert sources[3:5] == ["B", "B"]
-    assert sources[5:7] == ["A", "A"]
-    assert sources[7:10] == ["B", "B", "B"]
-
-
-@pytest.mark.asyncio
-async def test_dedup_preserves_append_priority_and_advances_cursors_cursor_backend() -> None:
-    """Append order is the priority signal; dedup must not let later sources win duplicates.
-
-    Also asserts that a leaf cursor advances even when items are skipped as duplicates.
-    """
-
-    a_items = [
-        {"id": 1, "src": "A"},
-        {"id": 2, "src": "A"},
-    ]
-    # B repeats A's ids first, then continues with unique ids.
-    b_items = [{"id": i, "src": "B"} for i in range(1, 50)]
-
-    methods_dict = {
-        "a": make_offset_paged_method(a_items),
-        "b": make_offset_paged_method(b_items),
-    }
-
-    config = {
-        "merger_id": "dedup_append",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "state_backend": "cursor",
-        "cursor_compress": True,
-        "max_refill_loops": 20,
-        "data": {
-            "merger_id": "append_mix",
-            "type": "merger_append",
-            "shuffle": False,
-            "items": [
-                {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"},
-                {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"},
-            ],
-        },
-    }
-
-    merger = parse_model(MergerDeduplication, config)
-    res = await merger.get_data(
-        methods_dict=methods_dict,
-        user_id="u",
-        limit=5,
-        next_page=FeedResultNextPage(data={}),
-    )
-
-    assert _ids(res.data) == [1, 2, 3, 4, 5]
-    assert _sources(res.data)[:2] == ["A", "A"]
-    assert _sources(res.data)[2:] == ["B", "B", "B"]
-
-    # B had to scan past duplicated ids 1 and 2, so its cursor should advance
-    # farther than the number of items it contributed to the final page.
-    assert "sf_b" in res.next_page.data
-    assert isinstance(res.next_page.data["sf_b"].after, int)
-    b_contributed = sum(1 for x in res.data if x.get("src") == "B")
-    assert res.next_page.data["sf_b"].after > b_contributed
