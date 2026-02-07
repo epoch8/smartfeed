@@ -3,12 +3,15 @@ import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from random import shuffle
-from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union, cast
 
 import redis
 from pydantic import BaseModel
 from redis.asyncio import Redis as AsyncRedis
 from redis.asyncio import RedisCluster as AsyncRedisCluster
+
+if TYPE_CHECKING:
+    from .execution.context import ExecutionContext
 
 
 def _is_async_redis_client(client: Any) -> bool:
@@ -80,6 +83,7 @@ class BaseFeedConfigModel(ABC, BaseModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        ctx: Optional["ExecutionContext"] = None,
         **params: Any,
     ) -> FeedResult:
         """Fetch data according to this node config."""
@@ -114,8 +118,14 @@ class SubFeed(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        ctx: Optional["ExecutionContext"] = None,
         **params: Any,
     ) -> FeedResult:
+        if ctx is None:
+            from .execution.context import ExecutionContext as _ExecutionContext
+
+            ctx = _ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
+
         subfeed_next_page = FeedResultNextPageInside(
             page=next_page.data[self.subfeed_id].page if self.subfeed_id in next_page.data else 1,
             after=next_page.data[self.subfeed_id].after if self.subfeed_id in next_page.data else None,

@@ -7,6 +7,8 @@ import redis
 from pydantic import BaseModel
 from redis.asyncio import Redis as AsyncRedis
 
+from ..execution.context import ExecutionContext
+from ..execution.executor import SlotSpec, SlotsPlan
 from ..feed_models import BaseFeedConfigModel, FeedResult, FeedResultNextPage
 
 if TYPE_CHECKING:
@@ -61,51 +63,61 @@ class MergerPercentage(BaseFeedConfigModel):
         limit: int,
         next_page: FeedResultNextPage,
         redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
+        ctx: Optional[ExecutionContext] = None,
         **params: Any,
     ) -> FeedResult:
-        result = FeedResult(data=[], next_page=FeedResultNextPage(data={}), has_next_page=False)
+        if ctx is None:
+            ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
 
-        dedup_active = bool(params.pop("_sf_dedup_active", False))
+        if ctx.executor is None:
+            from ..execution.executor import Executor
 
-        items_data: List[List[Any]] = [[] for _ in self.items]
-        results: List[Optional[FeedResult]] = [None for _ in self.items]
+            ctx.executor = Executor()
 
-        indexed_items = list(enumerate(self.items))
-        fetch_order = indexed_items
-        if dedup_active:
-            fetch_order = sorted(
-                indexed_items,
-                key=lambda p: (getattr(p[1].data, "dedup_priority", 0), -p[0]),
-                reverse=True,
-            )
+        return await ctx.executor.run(self, ctx, limit, next_page, **params)
 
-        for idx, item in fetch_order:
-            item_result = cast(
-                FeedResult,
-                await item.data.get_data(
-                    methods_dict=methods_dict,
-                    user_id=user_id,
-                    limit=limit * item.percentage // 100,
-                    next_page=next_page,
-                    redis_client=redis_client,
-                    _sf_dedup_active=dedup_active,
-                    **params,
-                ),
-            )
+    def build_plan(
+        self,
+        *,
+        ctx: ExecutionContext,
+        limit: int,
+        next_page: FeedResultNextPage,
+        **params: Any,
+    ) -> SlotsPlan:
+        owners: List[BaseFeedConfigModel] = [cast(BaseFeedConfigModel, item.data) for item in self.items]
 
-            results[idx] = item_result
+        slots: List[SlotSpec] = []
+        for item, owner in zip(self.items, owners):
+            child_limit = limit * int(item.percentage) // 100
+            slots.append(SlotSpec(owner=owner, max_count=max(0, child_limit)))
 
-        for idx, result_item in enumerate(results):
-            assert result_item is not None
-            items_data[idx] = result_item.data
+        async def _assemble(
+            output: List[Any],
+            merged_next_page: FeedResultNextPage,
+            owner_results: Dict[int, FeedResult],
+        ) -> FeedResult:
+            items_data: List[List[Any]] = []
+            has_next_page = False
 
-            if not result.has_next_page and result_item.has_next_page:
-                result.has_next_page = True
-            result.next_page.data.update(result_item.next_page.data)
+            for owner in owners:
+                child_res = owner_results.get(id(owner))
+                if child_res is None:
+                    items_data.append([])
+                    continue
+                items_data.append(list(child_res.data))
+                has_next_page = has_next_page or bool(child_res.has_next_page)
 
-        result.data = await self._merge_items_data(items_data=items_data)
+            data = await self._merge_items_data(items_data=items_data)
+            if self.shuffle:
+                shuffle(data)
 
-        if self.shuffle:
-            shuffle(result.data)
+            return FeedResult(data=data, next_page=merged_next_page, has_next_page=has_next_page)
 
-        return result
+        return SlotsPlan(
+            ctx=ctx,
+            limit=limit,
+            next_page=next_page,
+            params=dict(params),
+            slots=slots,
+            assemble=_assemble,
+        )

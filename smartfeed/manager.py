@@ -3,6 +3,8 @@ from typing import Any, Dict, Optional, Union
 import redis
 from redis.asyncio import Redis as AsyncRedis
 
+from .execution.context import ExecutionContext
+from .execution.executor import Executor
 from .schemas import FeedConfig, FeedResult, FeedResultNextPage
 
 
@@ -39,12 +41,7 @@ class FeedManager:
         :return: результат получения данных согласно конфигурации фида.
         """
 
-        result = await self.feed_config.feed.get_data(
-            methods_dict=self.methods_dict,
-            user_id=user_id,
-            limit=limit,
-            next_page=next_page,
-            redis_client=self.redis_client,
-            **params,
-        )
+        ctx = ExecutionContext(methods_dict=self.methods_dict, user_id=user_id, redis_client=self.redis_client)
+        ctx.executor = Executor()
+        result = await ctx.executor.run(self.feed_config.feed, ctx, limit, next_page, **params)
         return result

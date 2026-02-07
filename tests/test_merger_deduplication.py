@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 
 import pytest
@@ -789,11 +790,12 @@ async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf
     )
 
     assert _ids(res_1.data) == [1, 2, 3, 4, 5]
+
     assert res_1.next_page.data["dedup_append_pages"].page == 2
 
-    # In dedup-active append mode, each child is requested with the full page limit (5).
-    # B must therefore collect 5 unique items while skipping 2 duplicates -> scan ids 1..7.
-    assert res_1.next_page.data["sf_b"].after == 7
+    # In default arbitrate mode, B only needs to scan far enough to fill the remaining
+    # portion of the page after arbitration (here: 3 items: ids 3..5).
+    assert res_1.next_page.data["sf_b"].after == 5
 
     res_2 = await merger.get_data(
         methods_dict=methods_dict,
@@ -805,6 +807,72 @@ async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf
     assert len(res_2.data) == 5
     _assert_no_dupes_in_page(res_2.data)
     _assert_pages_no_overlap(res_1, res_2)
+
+
+@pytest.mark.asyncio
+async def test_dedup_arbitrate_mode_runs_parallel_prefetch_and_arbitrates_winners() -> None:
+    started_a = asyncio.Event()
+    started_b = asyncio.Event()
+    release = asyncio.Event()
+
+    items_a = [{"id": i, "src": "A"} for i in range(1, 200)]
+    items_b = [{"id": i, "src": "B"} for i in range(1, 200)]
+
+    async def method_a(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+        started_a.set()
+        await release.wait()
+        offset = int(next_page.after or 0)
+        data = items_a[offset : offset + limit]
+        next_page.after = offset + len(data)
+        next_page.page += 1
+        return FeedResultClient(data=data, next_page=next_page, has_next_page=True)
+
+    async def method_b(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+        started_b.set()
+        await release.wait()
+        offset = int(next_page.after or 0)
+        data = items_b[offset : offset + limit]
+        next_page.after = offset + len(data)
+        next_page.page += 1
+        return FeedResultClient(data=data, next_page=next_page, has_next_page=True)
+
+    methods_dict = {"a": method_a, "b": method_b}
+
+    config = {
+        "merger_id": "dedup_arbitrate",
+        "type": "merger_deduplication",
+        "dedup_key": "id",
+        "state_backend": "cursor",
+        "cursor_compress": True,
+        "data": {
+            "merger_id": "pct",
+            "type": "merger_percentage",
+            "shuffle": False,
+            "items": [
+                {"percentage": 50, "data": {"subfeed_id": "sf_a", "type": "subfeed", "method_name": "a"}},
+                {"percentage": 50, "data": {"subfeed_id": "sf_b", "type": "subfeed", "method_name": "b"}},
+            ],
+        },
+    }
+
+    merger = parse_model(MergerDeduplication, config)
+
+    task = asyncio.create_task(
+        merger.get_data(methods_dict=methods_dict, user_id="u", limit=10, next_page=FeedResultNextPage(data={}))
+    )
+
+    # If execution is sequential, one of these would time out.
+    await asyncio.wait_for(started_a.wait(), timeout=1)
+    await asyncio.wait_for(started_b.wait(), timeout=1)
+    release.set()
+
+    res = await asyncio.wait_for(task, timeout=2)
+
+    assert len(res.data) == 10
+    _assert_no_dupes_in_page(res.data)
+    # With equal priorities, stable tie-breaker should pick A (first branch) for overlapping keys.
+    winning = {item["id"]: item["src"] for item in res.data}
+    assert all(winning[i] == "A" for i in range(1, 6))
 
 
 @pytest.mark.asyncio
