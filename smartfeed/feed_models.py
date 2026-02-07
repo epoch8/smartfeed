@@ -138,14 +138,27 @@ class SubFeed(BaseFeedConfigModel):
             if arg in params:
                 method_params[arg] = params[arg]
 
+        method = method_spec.method
+        is_async = inspect.iscoroutinefunction(method) or inspect.iscoroutinefunction(getattr(method, "__call__", None))
+
         try:
-            method_result = await method_spec.method(
-                user_id=user_id,
-                limit=limit,
-                next_page=subfeed_next_page,
-                **method_params,
-                **self.subfeed_params,
-            )
+            if is_async:
+                method_result = await method(
+                    user_id=user_id,
+                    limit=limit,
+                    next_page=subfeed_next_page,
+                    **method_params,
+                    **self.subfeed_params,
+                )
+            else:
+                method_result = await asyncio.to_thread(
+                    method,
+                    user_id=user_id,
+                    limit=limit,
+                    next_page=subfeed_next_page,
+                    **method_params,
+                    **self.subfeed_params,
+                )
         except Exception:
             if self.raise_error:
                 raise
