@@ -206,3 +206,51 @@ async def test_slots_plan_quota_deficit_triggers_refill_wave() -> None:
     assert getattr(a, "calls") >= 2
     assert res.data[:3] == [{"id": "a_1"}, {"id": "a_2"}, {"id": "a_3"}]
     assert res.data[3:] == [{"id": "b_1"}, {"id": "b_2"}, {"id": "b_3"}]
+
+
+@pytest.mark.asyncio
+async def test_slots_plan_quota_deficit_stops_refill_when_owner_exhausts() -> None:
+    executor = Executor()
+    ctx = ExecutionContext(methods_dict={}, user_id="u", executor=executor)
+    ctx.dedup = _dedup_policy()
+
+    # Owner a can never satisfy its full slot quota.
+    a = _PagedOwner(subfeed_id="a", total=2)
+    b = _PagedOwner(subfeed_id="b", total=10)
+
+    def assemble(output, next_page, owner_results):
+        return FeedResult(data=output, next_page=next_page, has_next_page=False)
+
+    plan = SlotsPlan(
+        ctx=ctx,
+        limit=6,
+        next_page=FeedResultNextPage(
+            data={
+                "a": FeedResultNextPageInside(page=1, after=0),
+                "b": FeedResultNextPageInside(page=1, after=0),
+            }
+        ),
+        params={},
+        slots=[
+            SlotSpec(owner=a, max_count=3),
+            SlotSpec(owner=b, max_count=3),
+        ],
+        assemble=assemble,
+        # Force an initial under-fetch to create a quota deficit for a.
+        owner_fetch_limits={id(a): 1},
+    )
+
+    res = await executor.execute_plan(plan)
+
+    # a is exhausted after returning 2 total items; refill should stop.
+    assert getattr(a, "calls") == 2
+    assert getattr(a, "limits") == [1, 2]
+    assert getattr(b, "calls") == 1
+
+    assert res.data == [
+        {"id": "a_1"},
+        {"id": "a_2"},
+        {"id": "b_1"},
+        {"id": "b_2"},
+        {"id": "b_3"},
+    ]
