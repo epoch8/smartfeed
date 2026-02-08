@@ -107,12 +107,11 @@ class Executor:
 
         working_next_page = _pydantic_deep_copy(plan.next_page)
         cursor = CursorMap(working_next_page)
-        owners, owner_index = self._collect_plan_owners(plan)
+        owners, owner_index, owner_max_demand = self._collect_plan_owners(plan)
         dedup_policy = getattr(plan.ctx, "dedup", None)
         refill_settings = getattr(plan.ctx, "refill_settings", None) or getattr(plan.ctx, "dedup_settings", None)
         dedup_active = dedup_policy is not None
 
-        owner_max_demand = self._owner_slot_demand(plan)
         owner_buffers, owner_results = await self._run_plan_owners(
             plan=plan,
             owners=owners,
@@ -137,25 +136,17 @@ class Executor:
         assembled = await self._maybe_await(plan.assemble(output, cursor.next_page, owner_results))
         return assembled
 
-    def _owner_slot_demand(self, plan: SlotsPlan) -> Dict[int, int]:
-        """Compute a per-owner maximum demand based on the slot schedule."""
-
-        demand: Dict[int, int] = {}
-        for slot in plan.slots:
-            owner_id = id(slot.owner)
-            demand[owner_id] = demand.get(owner_id, 0) + int(slot.max_count)
-        return demand
-
-    def _collect_plan_owners(self, plan: SlotsPlan) -> tuple[List[Any], Dict[int, int]]:
+    def _collect_plan_owners(self, plan: SlotsPlan) -> tuple[List[Any], Dict[int, int], Dict[int, int]]:
         owners: List[Any] = []
         owner_index: Dict[int, int] = {}
+        owner_demand: Dict[int, int] = {}
         for slot in plan.slots:
             owner_id = id(slot.owner)
-            if owner_id in owner_index:
-                continue
-            owner_index[owner_id] = len(owners)
-            owners.append(slot.owner)
-        return owners, owner_index
+            if owner_id not in owner_index:
+                owner_index[owner_id] = len(owners)
+                owners.append(slot.owner)
+            owner_demand[owner_id] = owner_demand.get(owner_id, 0) + int(slot.max_count)
+        return owners, owner_index, owner_demand
 
     async def _run_owner(
         self,
