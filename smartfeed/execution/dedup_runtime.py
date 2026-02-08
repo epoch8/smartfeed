@@ -143,6 +143,32 @@ class DedupRuntime:
 
         return owner_buffers, owner_results
 
+    async def apply_slots_plan_refill(
+        self,
+        *,
+        plan: SlotsPlan,
+        owners: List[Any],
+        owner_index: Dict[int, int],
+        owner_buffers: Dict[int, List[Any]],
+        owner_results: Dict[int, FeedResult],
+        refill_settings: Any,
+        cursor: CursorMap,
+    ) -> Tuple[Dict[int, List[Any]], Dict[int, FeedResult]]:
+        deficits = self._compute_slot_deficits(plan=plan, owner_buffers=owner_buffers)
+        if deficits:
+            await self._refill_deficits_without_dedup(
+                plan=plan,
+                deficits=deficits,
+                owners=owners,
+                owner_index=owner_index,
+                owner_buffers=owner_buffers,
+                owner_results=owner_results,
+                refill_settings=refill_settings,
+                cursor=cursor,
+            )
+
+        return owner_buffers, owner_results
+
     def _compute_slot_deficits(self, *, plan: SlotsPlan, owner_buffers: Dict[int, List[Any]]) -> Dict[int, int]:
         quota_schedule = sum(int(s.max_count) for s in plan.slots) <= int(plan.limit)
         deficits: Dict[int, int] = {}
@@ -290,6 +316,115 @@ class DedupRuntime:
 
                 if wave_accepted:
                     owner_state["accepted"].extend(wave_accepted)
+                    owner_state["remaining"] = int(owner_state["missing_total"]) - len(owner_state["accepted"])
+
+                if owner_state["remaining"] > 0 and owner_state["has_next_page"]:
+                    owner_state["loops"] += 1
+
+        for refill_owner in deficit_owners:
+            refill_owner_id = id(refill_owner)
+            owner_state = state.get(refill_owner_id)
+            if owner_state is None:
+                continue
+
+            accepted = owner_state["accepted"]
+            if accepted:
+                owner_buffers.setdefault(refill_owner_id, [])
+                owner_buffers[refill_owner_id].extend(accepted)
+
+            owner_results[refill_owner_id] = FeedResult(
+                data=list(owner_buffers.get(refill_owner_id, [])),
+                next_page=owner_state["current_next_page"],
+                has_next_page=owner_state["has_next_page"],
+            )
+
+    async def _refill_deficits_without_dedup(
+        self,
+        *,
+        plan: SlotsPlan,
+        deficits: Dict[int, int],
+        owners: List[Any],
+        owner_index: Dict[int, int],
+        owner_buffers: Dict[int, List[Any]],
+        owner_results: Dict[int, FeedResult],
+        refill_settings: Any,
+        cursor: CursorMap,
+    ) -> None:
+        max_refill_loops = max(1, int(getattr(refill_settings, "max_refill_loops", 20)))
+
+        deficit_owners: List[Any] = [o for o in owners if id(o) in deficits]
+        deficit_owners = sorted(
+            deficit_owners,
+            key=lambda o: (
+                int(getattr(o, "dedup_priority", 0)),
+                owner_index.get(id(o), 0),
+            ),
+        )
+
+        state: Dict[int, Dict[str, Any]] = {}
+        for refill_owner in deficit_owners:
+            refill_owner_id = id(refill_owner)
+            missing_total = int(deficits.get(refill_owner_id, 0))
+            if missing_total <= 0:
+                continue
+
+            base_np = owner_results[refill_owner_id].next_page if refill_owner_id in owner_results else plan.next_page
+            state[refill_owner_id] = {
+                "missing_total": missing_total,
+                "remaining": missing_total,
+                "accepted": [],
+                "loops": 0,
+                "current_next_page": base_np,
+                "has_next_page": True,
+            }
+
+        if not state:
+            return
+
+        while True:
+            wave_ops: List[Tuple[Any, int, FeedResultNextPage, int]] = []
+            for refill_owner in deficit_owners:
+                refill_owner_id = id(refill_owner)
+                owner_state = state.get(refill_owner_id)
+                if owner_state is None:
+                    continue
+                if owner_state["remaining"] <= 0:
+                    continue
+                if not owner_state["has_next_page"]:
+                    continue
+                if owner_state["loops"] >= max_refill_loops:
+                    continue
+
+                base_np = owner_state["current_next_page"]
+                request_limit = max(1, int(owner_state["remaining"]))
+                wave_ops.append((refill_owner, refill_owner_id, base_np, request_limit))
+
+            if not wave_ops:
+                break
+
+            results = await self._executor.gather(
+                *[
+                    self._executor._run_owner(
+                        plan=plan,
+                        owner=owner,
+                        demand=request_limit,
+                        base_next_page=base_np,
+                        dedup_active=False,
+                    )
+                    for owner, _owner_id, base_np, request_limit in wave_ops
+                ]
+            )
+
+            for (_owner, owner_id, _base_np, _request_limit), result in zip(wave_ops, results):
+                owner_state = state[owner_id]
+                remaining_before = int(owner_state["remaining"])
+
+                owner_state["current_next_page"] = result.next_page
+                owner_state["has_next_page"] = bool(result.has_next_page)
+                cursor.merge_delta(base_next_page=plan.next_page, owner_next_page=result.next_page)
+
+                if remaining_before > 0:
+                    owner_state["accepted"].extend(list(result.data)[:remaining_before])
                     owner_state["remaining"] = int(owner_state["missing_total"]) - len(owner_state["accepted"])
 
                 if owner_state["remaining"] > 0 and owner_state["has_next_page"]:

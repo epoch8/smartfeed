@@ -149,6 +149,68 @@ async def test_dedup_deep_tree_cursor_backend() -> None:
     dh._assert_sources_at_positions(res_2.data, [1, 4], "P")
 
 
+@pytest.mark.asyncio
+async def test_dedup_nested_positional_refill_not_masked_by_parent_append() -> None:
+    """Nested positional refills must run even when parent append can fill the page.
+
+    Regression:
+    - parent dedup wrapper executes append owners with dedup disabled in owner ctx
+    - positional child under-fetches (`max_per_call=1`) and needs internal slot refills
+    - if those refills are skipped, append sibling backfills the page and positional slots are lost
+    """
+
+    items_default = dh.make_items("D", 1, 400, id_offset=1_000)
+    items_pos = dh.make_items("P", 1, 400, id_offset=10_000)
+    items_fill = dh.make_items("F", 1, 400, id_offset=20_000)
+
+    pos_calls = {"count": 0}
+    pos_base = dh.make_offset_paged_method(items_pos, max_per_call=1)
+
+    async def _pos_method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+        pos_calls["count"] += 1
+        return await pos_base(user_id, limit, next_page, **kwargs)
+
+    methods_dict = {
+        "default": dh.make_offset_paged_method(items_default),
+        "pos": _pos_method,
+        "fill": dh.make_offset_paged_method(items_fill),
+    }
+
+    config = dh._dedup_config(
+        "dedup_nested_refill",
+        dh._append_config(
+            "append_nested_refill",
+            [
+                dh._positional_config(
+                    "pos_nested_refill",
+                    positions=[2, 4, 6, 8, 10, 12],
+                    positional=dh._subfeed("sf_pos_nested", "pos"),
+                    default=dh._subfeed("sf_default_nested", "default"),
+                ),
+                dh._subfeed("sf_fill_nested", "fill"),
+            ],
+        ),
+        dedup_key="id",
+        state_backend="cursor",
+        overfetch_factor=3,
+        max_refill_loops=50,
+    )
+
+    merger = parse_model(MergerDeduplication, config)
+    res = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=12,
+        next_page=FeedResultNextPage(data={}),
+    )
+
+    assert len(res.data) == 12
+    dh._assert_no_dupes_in_page(res.data)
+    dh._assert_sources_at_positions(res.data, [2, 4, 6, 8, 10, 12], "P")
+    assert "F" not in set(dh._sources(res.data))
+    assert pos_calls["count"] > 1
+
+
 @pytest.mark.parametrize(
     "merger_type",
     [

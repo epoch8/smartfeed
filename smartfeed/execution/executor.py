@@ -131,6 +131,16 @@ class Executor:
                 refill_settings=refill_settings,
                 cursor=cursor,
             )
+        elif refill_settings is not None:
+            owner_buffers, owner_results = await self._dedup_runtime().apply_slots_plan_refill(
+                plan=plan,
+                owners=owners,
+                owner_index=owner_index,
+                owner_buffers=owner_buffers,
+                owner_results=owner_results,
+                refill_settings=refill_settings,
+                cursor=cursor,
+            )
 
         output = self._consume_slots(plan=plan, owner_buffers=owner_buffers)
         assembled = await self._maybe_await(plan.assemble(output, cursor.next_page, owner_results))
@@ -166,7 +176,9 @@ class Executor:
                 redis_client=plan.ctx.redis_client,
                 executor=plan.ctx.executor,
                 dedup=None,
-                refill_settings=None,
+                # Keep refill settings so nested slots plans can still compensate
+                # owner deficits while top-level dedup arbitration remains centralized.
+                refill_settings=plan.ctx.refill_settings,
             )
         return await self.run(owner, owner_ctx, demand, isolated_next_page, **plan.params)
 
