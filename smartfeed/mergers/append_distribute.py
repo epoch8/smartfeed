@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union
-
-import redis
-from redis.asyncio import Redis as AsyncRedis
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from typing_extensions import no_type_check
 
 from ..execution.context import ExecutionContext
@@ -73,21 +70,3 @@ class MergerAppendDistribute(BaseFeedConfigModel):
             slots=slots,
             assemble=_assemble,
         )
-
-    async def get_data(
-        self,
-        methods_dict: Dict[str, Callable],
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
-        ctx: Optional[ExecutionContext] = None,
-        **params: Any,
-    ) -> FeedResult:
-        if ctx is None:
-            ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
-        else:
-            ctx.ensure_redis_client(redis_client)
-
-        executor = ctx.ensure_executor()
-        return await executor.run(self, ctx, limit, next_page, **params)

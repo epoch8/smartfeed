@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from random import shuffle
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union, cast
-
-import redis
-from redis.asyncio import Redis as AsyncRedis
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, cast
 
 from ..execution.context import ExecutionContext
 from ..execution.executor import SlotSpec, SlotsPlan
@@ -49,21 +46,3 @@ class MergerAppend(BaseFeedConfigModel):
             slots=slots,
             assemble=_assemble,
         )
-
-    async def get_data(
-        self,
-        methods_dict: Dict[str, Callable],
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
-        ctx: Optional[ExecutionContext] = None,
-        **params: Any,
-    ) -> FeedResult:
-        if ctx is None:
-            ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
-        else:
-            ctx.ensure_redis_client(redis_client)
-
-        executor = ctx.ensure_executor()
-        return await executor.run(self, ctx, limit, next_page, **params)

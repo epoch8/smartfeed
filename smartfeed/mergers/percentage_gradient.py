@@ -1,9 +1,7 @@
 from random import shuffle
-from typing import Any, Callable, Dict, List, Literal, Optional, Union, cast
+from typing import Any, Dict, List, Literal, cast
 
-import redis
 from pydantic import model_validator
-from redis.asyncio import Redis as AsyncRedis
 
 from ..execution.context import ExecutionContext
 from ..execution.executor import SlotSpec, SlotsPlan
@@ -68,24 +66,6 @@ class MergerPercentageGradient(BaseFeedConfigModel):
                 first_iter = False
 
         return result
-
-    async def get_data(
-        self,
-        methods_dict: Dict[str, Callable],
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
-        ctx: Optional[ExecutionContext] = None,
-        **params: Any,
-    ) -> FeedResult:
-        if ctx is None:
-            ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
-        else:
-            ctx.ensure_redis_client(redis_client)
-
-        executor = ctx.ensure_executor()
-        return await executor.run(self, ctx, limit, next_page, **params)
 
     def build_plan(
         self,

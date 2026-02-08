@@ -319,6 +319,50 @@ async def test_dedup_page_zero_resets_seen_and_descendant_cursors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dedup_cursor_backend_persists_seen_state_beyond_two_pages() -> None:
+    # First 2 pages are unique, then page 3 starts with duplicates from page 1.
+    items = dh.make_items("S", 1, 11) + dh.make_items("S", 1, 4) + dh.make_items("S", 11, 31)
+    methods_dict = {"s": dh.make_offset_paged_method(items)}
+
+    config = dh._dedup_config(
+        "dedup_cursor_3p",
+        dh._subfeed("sf_stream", "s"),
+        state_backend="cursor",
+    )
+    merger = parse_model(MergerDeduplication, config)
+
+    res_1 = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=5,
+        next_page=FeedResultNextPage(data={}),
+    )
+    res_2 = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=5,
+        next_page=res_1.next_page,
+    )
+    res_3 = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=5,
+        next_page=res_2.next_page,
+    )
+
+    ids_1 = dh._ids(res_1.data)
+    ids_2 = dh._ids(res_2.data)
+    ids_3 = dh._ids(res_3.data)
+
+    assert ids_1 == [1, 2, 3, 4, 5]
+    assert ids_2 == [6, 7, 8, 9, 10]
+    assert ids_3 == [11, 12, 13, 14, 15]
+    assert not (set(ids_1) & set(ids_2))
+    assert not (set(ids_1) & set(ids_3))
+    assert not (set(ids_2) & set(ids_3))
+
+
+@pytest.mark.asyncio
 async def test_dedup_append_cursor_backend_across_pages_and_refill_advances_leaf_cursor_exactly() -> None:
     """Append: across pages there is no overlap; refill advances cursors correctly.
 

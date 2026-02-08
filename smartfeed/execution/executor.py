@@ -109,7 +109,7 @@ class Executor:
         cursor = CursorMap(working_next_page)
         owners, owner_index, owner_max_demand = self._collect_plan_owners(plan)
         dedup_policy = getattr(plan.ctx, "dedup", None)
-        refill_settings = getattr(plan.ctx, "refill_settings", None) or getattr(plan.ctx, "dedup_settings", None)
+        refill_settings = getattr(plan.ctx, "refill_settings", None)
         dedup_active = dedup_policy is not None
 
         owner_buffers, owner_results = await self._run_plan_owners(
@@ -167,7 +167,6 @@ class Executor:
                 executor=plan.ctx.executor,
                 dedup=None,
                 refill_settings=None,
-                dedup_settings=None,
             )
         return await self.run(owner, owner_ctx, demand, isolated_next_page, **plan.params)
 

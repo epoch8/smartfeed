@@ -35,7 +35,7 @@ class CursorSeenStore:
     cursor_max_keys: Optional[int]
 
     seen_priority_map: Dict[str, int]
-    seen_updates_in_order: List[Tuple[str, int]]
+    seen_order: List[str]
 
     @classmethod
     def from_after(
@@ -50,7 +50,7 @@ class CursorSeenStore:
             cursor_compress=cursor_compress,
             cursor_max_keys=cursor_max_keys,
             seen_priority_map=seen_priority_map,
-            seen_updates_in_order=[],
+            seen_order=list(seen_priority_map.keys()),
         )
 
     async def prefetch(self, keys: List[str]) -> None:
@@ -64,15 +64,21 @@ class CursorSeenStore:
         if existing is not None and priority <= existing:
             return
         self.seen_priority_map[key] = priority
-        self.seen_updates_in_order.append((key, priority))
+        if key in self.seen_order:
+            self.seen_order.remove(key)
+        self.seen_order.append(key)
 
     async def reset(self) -> None:
         self.seen_priority_map.clear()
-        self.seen_updates_in_order.clear()
+        self.seen_order.clear()
 
     async def commit(self) -> Any:
+        # Persist the full snapshot so dedup state survives beyond 2 pages.
+        seen_snapshot_in_order: List[Tuple[str, int]] = [
+            (key, self.seen_priority_map[key]) for key in self.seen_order if key in self.seen_priority_map
+        ]
         return encode_seen_for_cursor(
-            self.seen_updates_in_order,
+            seen_snapshot_in_order,
             cursor_compress=self.cursor_compress,
             cursor_max_keys=self.cursor_max_keys,
         )

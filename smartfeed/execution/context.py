@@ -26,7 +26,6 @@ class ExecutionContext:
 
     # Execution settings (optional)
     refill_settings: Optional["RefillExecutionSettings"] = None
-    dedup_settings: Optional["RefillExecutionSettings"] = None
 
     def ensure_redis_client(self, redis_client: Optional[Union[redis.Redis, AsyncRedis]]) -> None:
         if self.redis_client is None and redis_client is not None:

@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from random import shuffle
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union, cast
@@ -68,14 +67,13 @@ class FeedResultClient(BaseModel):
     has_next_page: bool
 
 
-class BaseFeedConfigModel(ABC, BaseModel):
+class BaseFeedConfigModel(BaseModel):
     """Base class for merger/subfeed config models."""
 
     # Higher value means the item should "win" deduplication when duplicates exist.
     # This is primarily used by MergerDeduplication and by mergers when a dedup wrapper is active.
     dedup_priority: int = 0
 
-    @abstractmethod
     async def get_data(
         self,
         methods_dict: Dict[str, Callable],
@@ -86,7 +84,22 @@ class BaseFeedConfigModel(ABC, BaseModel):
         ctx: Optional["ExecutionContext"] = None,
         **params: Any,
     ) -> FeedResult:
-        """Fetch data according to this node config."""
+        """Default merger execution path via the shared executor."""
+
+        if not callable(getattr(self, "build_plan", None)):
+            raise NotImplementedError(
+                f"{self.__class__.__name__} must implement build_plan(...) or override get_data(...)."
+            )
+
+        if ctx is None:
+            from .execution.context import ExecutionContext as _ExecutionContext
+
+            ctx = _ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
+        else:
+            ctx.ensure_redis_client(redis_client)
+
+        executor = ctx.ensure_executor()
+        return await executor.run(self, ctx, limit, next_page, **params)
 
 
 @dataclass

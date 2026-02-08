@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from ..feed_models import BaseFeedConfigModel, FeedResult, FeedResultNextPage
 from .context import ExecutionContext
@@ -22,7 +22,7 @@ class DedupRuntime:
         self._executor = executor
 
     def _get_refill_settings(self, ctx: ExecutionContext) -> Any:
-        return getattr(ctx, "refill_settings", None) or getattr(ctx, "dedup_settings", None)
+        return getattr(ctx, "refill_settings", None)
 
     async def run_node_with_dedup_refill(
         self,
@@ -175,8 +175,10 @@ class DedupRuntime:
             return deficits
         if remaining <= 0:
             return {}
-        owner_id = deficit_slots[-1] if deficit_slots else (id(plan.slots[-1].owner) if plan.slots else None)
-        return {owner_id: remaining} if owner_id is not None else {}
+        fallback_owner_id: Optional[int] = (
+            deficit_slots[-1] if deficit_slots else (id(plan.slots[-1].owner) if plan.slots else None)
+        )
+        return {fallback_owner_id: remaining} if fallback_owner_id is not None else {}
 
     async def _refill_deficits(
         self,

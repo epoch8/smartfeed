@@ -22,6 +22,20 @@ async def test_cursor_seen_store_set_max_and_commit_roundtrip() -> None:
     assert decoded == {"a": 1, "b": 2}
 
 
+@pytest.mark.asyncio
+async def test_cursor_seen_store_commit_keeps_previous_cursor_state() -> None:
+    store = CursorSeenStore.from_after(
+        after={"v": 2, "seen": [["a", 1], ["b", 2]]},
+        cursor_compress=False,
+        cursor_max_keys=None,
+    )
+    store.set_max("c", 3)
+
+    after = await store.commit()
+    decoded = decode_seen_from_cursor(after)
+    assert decoded == {"a": 1, "b": 2, "c": 3}
+
+
 @pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
 @pytest.mark.asyncio
 async def test_redis_seen_store_prefetch_set_max_commit_and_reset(redis_client) -> None:

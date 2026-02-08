@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional
 
-import redis
 from pydantic import PrivateAttr, model_validator
-from redis.asyncio import Redis as AsyncRedis
 
 from ..execution.context import ExecutionContext, RefillExecutionSettings
 from ..execution.cursors import CursorMap
@@ -102,24 +100,6 @@ class MergerDeduplication(BaseFeedConfigModel):
             return f"dedup:{self.merger_id}:{user_id}:{suffix}"
         return f"dedup:{self.merger_id}:{user_id}"
 
-    async def get_data(
-        self,
-        methods_dict: Dict[str, Callable],
-        user_id: Any,
-        limit: int,
-        next_page: FeedResultNextPage,
-        redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None,
-        ctx: Optional[ExecutionContext] = None,
-        **params: Any,
-    ) -> FeedResult:
-        if ctx is None:
-            ctx = ExecutionContext(methods_dict=methods_dict, user_id=user_id, redis_client=redis_client)
-        else:
-            ctx.ensure_redis_client(redis_client)
-
-        executor = ctx.ensure_executor()
-        return await executor.run(self, ctx, limit, next_page, **params)
-
     def build_plan(
         self,
         *,
@@ -185,7 +165,6 @@ class MergerDeduplication(BaseFeedConfigModel):
                 executor=ctx.executor,
                 dedup=policy,
                 refill_settings=refill_settings,
-                dedup_settings=refill_settings,
             )
 
             child = _pydantic_deep_copy(self.data)
