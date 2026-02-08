@@ -12,32 +12,47 @@ from .. import jsonlib as json
 from ..feed_models import _is_async_redis_client, _redis_call
 
 
+def _seen_entries_to_map(entries: Any) -> Dict[str, int]:
+    """Coerce a legacy cursor "seen" list into a {key: priority} map.
+
+    Supports:
+    - ["k1", "k2", ...] (implies priority 0)
+    - [["k1", 10], ["k2", 3], ...] (explicit priorities)
+    """
+
+    seen_map: Dict[str, int] = {}
+    if not isinstance(entries, list):
+        return seen_map
+
+    for entry_item in entries:
+        if isinstance(entry_item, (list, tuple)) and len(entry_item) == 2:
+            seen_map[str(entry_item[0])] = int(entry_item[1])
+        else:
+            seen_map[str(entry_item)] = 0
+    return seen_map
+
+
 def decode_seen_from_cursor(after: Any) -> Dict[str, int]:
     if after is None:
         return {}
 
     if isinstance(after, dict) and "z" in after:
+        if after.get("v") != 2:
+            return {}
+        if after.get("c") != "zlib+base64":
+            return {}
         payload = base64.urlsafe_b64decode(str(after["z"]).encode())
         raw = zlib.decompress(payload).decode()
         decoded = json.loads(raw)
-        if isinstance(decoded, dict):
-            return {str(k): int(v) for k, v in decoded.items()}
         if isinstance(decoded, list):
-            seen_map: Dict[str, int] = {}
-            for entry_item in decoded:
-                if isinstance(entry_item, (list, tuple)) and len(entry_item) == 2:
-                    seen_map[str(entry_item[0])] = int(entry_item[1])
-                else:
-                    seen_map[str(entry_item)] = 0
-            return seen_map
+            return _seen_entries_to_map(decoded)
         return {}
 
     if isinstance(after, dict) and "seen" in after:
-        return {str(k): 0 for k in list(after["seen"])}
-    if isinstance(after, list):
-        return {str(k): 0 for k in list(after)}
-    if isinstance(after, dict):
-        return {str(k): int(v) for k, v in after.items() if k not in {"v", "c", "n"}}
+        if after.get("v") != 2:
+            return {}
+        return _seen_entries_to_map(list(after["seen"]))
+
     return {}
 
 
