@@ -54,7 +54,9 @@ class ChromeTraceRecorder:
             }
         )
 
-    def instant(self, name: str, *, tid: int, ts_us: Optional[int] = None, args: Optional[Dict[str, Any]] = None) -> None:
+    def instant(
+        self, name: str, *, tid: int, ts_us: Optional[int] = None, args: Optional[Dict[str, Any]] = None
+    ) -> None:
         self._emit(
             {
                 "name": name,
@@ -132,7 +134,9 @@ class LeafConcurrencyTracker:
             return self.current
 
 
-def _trace_wrap_awaitable(rec: ChromeTraceRecorder, name: str, awaitable: Awaitable[Any], *, args: Dict[str, Any]) -> Awaitable[Any]:
+def _trace_wrap_awaitable(
+    rec: ChromeTraceRecorder, name: str, awaitable: Awaitable[Any], *, args: Dict[str, Any]
+) -> Awaitable[Any]:
     async def _wrapped() -> Any:
         task = asyncio.current_task()
         tid = id(task) if task is not None else 0
@@ -209,7 +213,7 @@ async def test_async_loop_blocks_and_trace_for_deep_tree_all_mergers(redis_clien
 
     - Builds one deep tree that includes ALL merger types.
     - Simulates 2 sequential requests (fresh + next page).
-    - Forces refills by creating lots of cross-branch duplicates.
+    - Forces refills via positional under-fetch (`max_per_call=1`).
     - Records loop scheduling lag (blocks/hangs) and optionally exports a Chrome trace.
 
     Set `SMARTFEED_CHROME_TRACE=/path/to/trace.json` to write a trace.
@@ -238,6 +242,13 @@ async def test_async_loop_blocks_and_trace_for_deep_tree_all_mergers(redis_clien
     # --- tracing (test-only monkeypatch) ---
     rec = ChromeTraceRecorder()
     leaf_concurrency = LeafConcurrencyTracker()
+    pos_leaf_calls = {"count": 0}
+
+    pos_leaf_base = dh.make_offset_paged_method(items_pos_leaf, max_per_call=1)
+
+    async def _pos_leaf_counted(user_id: Any, limit: int, next_page: Any, **kwargs: Any) -> Any:
+        pos_leaf_calls["count"] += 1
+        return await pos_leaf_base(user_id, limit, next_page, **kwargs)
 
     # Leaf method tracing: wrap the *actual* subfeed method calls.
     # These spans are what you want to inspect for "are leaf calls parallel?".
@@ -296,7 +307,7 @@ async def test_async_loop_blocks_and_trace_for_deep_tree_all_mergers(redis_clien
         "pos_leaf": _wrap_leaf_method_traced(
             rec=rec,
             key="pos_leaf",
-            method=dh.make_offset_paged_method(items_pos_leaf, max_per_call=1),
+            method=_pos_leaf_counted,
             latency_s=leaf_latency_s,
             concurrency=leaf_concurrency,
         ),
@@ -436,6 +447,9 @@ async def test_async_loop_blocks_and_trace_for_deep_tree_all_mergers(redis_clien
 
     # Hard assertion: leaf calls must overlap (async concurrency), not serialize.
     assert leaf_concurrency.peak > 1
+    # Refill signal: with max_per_call=1, two page requests should trigger
+    # multiple extra positional calls to satisfy positional slots.
+    assert pos_leaf_calls["count"] > 2
 
     # Primary signal: event-loop should remain responsive under load.
     assert monitor.max_lag_s < 0.1

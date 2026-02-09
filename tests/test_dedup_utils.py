@@ -3,12 +3,7 @@ from typing import Any, List
 import pytest
 
 from smartfeed.feed_models import _redis_call
-from smartfeed.policies.dedup_utils import (
-    decode_seen_from_cursor,
-    encode_seen_for_cursor,
-    redis_zmscore,
-)
-
+from smartfeed.policies.dedup_utils import decode_seen_from_cursor, encode_seen_for_cursor, redis_zmscore
 from tests.fixtures.redis import redis_client
 
 

@@ -64,10 +64,29 @@ class MergerPercentage(BaseFeedConfigModel):
     ) -> SlotsPlan:
         owners: List[BaseFeedConfigModel] = [cast(BaseFeedConfigModel, item.data) for item in self.items]
 
-        slots: List[SlotSpec] = []
-        for item, owner in zip(self.items, owners):
-            child_limit = limit * int(item.percentage) // 100
-            slots.append(SlotSpec(owner=owner, max_count=max(0, child_limit)))
+        slot_limits: List[int] = []
+        remainders: List[tuple[int, int]] = []
+        total_percentage = sum(int(item.percentage) for item in self.items)
+
+        for idx, item in enumerate(self.items):
+            raw = int(limit) * int(item.percentage)
+            child_limit = raw // 100
+            slot_limits.append(max(0, child_limit))
+            remainders.append((raw % 100, idx))
+
+        # avoid underfilling for the common "percentages sum to 100" case
+        if total_percentage == 100:
+            missing = max(0, int(limit) - sum(slot_limits))
+            if missing > 0:
+                for _rem, idx in sorted(remainders, key=lambda x: (-x[0], x[1])):
+                    if missing <= 0:
+                        break
+                    slot_limits[idx] += 1
+                    missing -= 1
+
+        slots: List[SlotSpec] = [
+            SlotSpec(owner=owner, max_count=max(0, int(slot_limits[idx]))) for idx, owner in enumerate(owners)
+        ]
 
         def _assemble(
             output: List[Any],

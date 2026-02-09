@@ -1,6 +1,6 @@
 import pytest
 
-from smartfeed.execution.context import ExecutionContext
+from smartfeed.execution.context import ExecutionContext, RefillExecutionSettings
 from smartfeed.execution.executor import Executor
 from smartfeed.execution.plans import SlotSpec, SlotsPlan
 from smartfeed.feed_models import BaseFeedConfigModel, FeedResult, FeedResultNextPage, FeedResultNextPageInside
@@ -186,10 +186,12 @@ async def test_slots_plan_quota_deficit_triggers_refill_wave() -> None:
     plan = SlotsPlan(
         ctx=ctx,
         limit=6,
-        next_page=FeedResultNextPage(data={
-            "a": FeedResultNextPageInside(page=1, after=0),
-            "b": FeedResultNextPageInside(page=1, after=0),
-        }),
+        next_page=FeedResultNextPage(
+            data={
+                "a": FeedResultNextPageInside(page=1, after=0),
+                "b": FeedResultNextPageInside(page=1, after=0),
+            }
+        ),
         params={},
         slots=[
             SlotSpec(owner=a, max_count=3),
@@ -254,3 +256,42 @@ async def test_slots_plan_quota_deficit_stops_refill_when_owner_exhausts() -> No
         {"id": "b_2"},
         {"id": "b_3"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_slots_plan_quota_deficit_refills_without_dedup_when_refill_settings_present() -> None:
+    executor = Executor()
+    ctx = ExecutionContext(methods_dict={}, user_id="u", executor=executor)
+    ctx.refill_settings = RefillExecutionSettings(overfetch_factor=3, max_refill_loops=10)
+
+    a = _PagedOwner(subfeed_id="a", total=10)
+    b = _PagedOwner(subfeed_id="b", total=10)
+
+    def assemble(output, next_page, owner_results):
+        return FeedResult(data=output, next_page=next_page, has_next_page=False)
+
+    plan = SlotsPlan(
+        ctx=ctx,
+        limit=6,
+        next_page=FeedResultNextPage(
+            data={
+                "a": FeedResultNextPageInside(page=1, after=0),
+                "b": FeedResultNextPageInside(page=1, after=0),
+            }
+        ),
+        params={},
+        slots=[
+            SlotSpec(owner=a, max_count=3),
+            SlotSpec(owner=b, max_count=3),
+        ],
+        # force an initial under-fetch for owner a.
+        owner_fetch_limits={id(a): 1},
+        assemble=assemble,
+    )
+
+    res = await executor.execute_plan(plan)
+
+    # refill must still happen even when dedup policy is absent.
+    assert getattr(a, "calls") >= 2
+    assert res.data[:3] == [{"id": "a_1"}, {"id": "a_2"}, {"id": "a_3"}]
+    assert res.data[3:] == [{"id": "b_1"}, {"id": "b_2"}, {"id": "b_3"}]

@@ -56,10 +56,19 @@ class MergerPercentageGradient(BaseFeedConfigModel):
                 if result["percentages"] and result["percentages"][-1]["to"] >= 100:
                     result["limit_to"] += iter_limit
                     result["percentages"][-1]["limit"] += iter_limit
+                    result["percentages"][-1]["to_take"] += iter_limit
                 else:
-                    result["limit_from"] += iter_limit * percentage_from // 100
-                    result["limit_to"] += iter_limit * percentage_to // 100
-                    iter_result = {"limit": iter_limit, "from": percentage_from, "to": percentage_to}
+                    from_take = iter_limit * percentage_from // 100
+                    to_take = iter_limit - from_take
+                    result["limit_from"] += from_take
+                    result["limit_to"] += to_take
+                    iter_result = {
+                        "limit": iter_limit,
+                        "from": percentage_from,
+                        "to": percentage_to,
+                        "from_take": from_take,
+                        "to_take": to_take,
+                    }
                     result["percentages"].append(iter_result)
 
             if first_iter:
@@ -110,8 +119,11 @@ class MergerPercentageGradient(BaseFeedConfigModel):
             from_start_index = 0
             to_start_index = 0
             for lp_data in limits_and_percents["percentages"]:
-                from_end_index = (lp_data["limit"] * lp_data["from"] // 100) + from_start_index
-                to_end_index = (lp_data["limit"] * lp_data["to"] // 100) + to_start_index
+                from_take = int(lp_data.get("from_take", lp_data["limit"] * lp_data["from"] // 100))
+                to_take = int(lp_data.get("to_take", lp_data["limit"] - from_take))
+
+                from_end_index = from_start_index + from_take
+                to_end_index = to_start_index + to_take
 
                 data.extend(from_data[from_start_index:from_end_index])
                 data.extend(to_data[to_start_index:to_end_index])

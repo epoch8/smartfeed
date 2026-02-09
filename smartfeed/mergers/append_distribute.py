@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+
 from typing_extensions import no_type_check
 
 from ..execution.context import ExecutionContext

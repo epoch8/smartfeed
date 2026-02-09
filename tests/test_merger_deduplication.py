@@ -211,6 +211,65 @@ async def test_dedup_nested_positional_refill_not_masked_by_parent_append() -> N
     assert pos_calls["count"] > 1
 
 
+@pytest.mark.asyncio
+async def test_dedup_nested_percentage_refill_not_masked_by_parent_append() -> None:
+    """Nested percentage refills must run even when parent append can fill."""
+
+    items_a = dh.make_items("A", 1, 400, id_offset=1_000)
+    items_b = dh.make_items("B", 1, 400, id_offset=10_000)
+    items_fill = dh.make_items("F", 1, 400, id_offset=20_000)
+
+    b_calls = {"count": 0}
+    b_base = dh.make_offset_paged_method(items_b, max_per_call=1)
+
+    async def _b_method(user_id, limit, next_page, **kwargs):  # pylint: disable=unused-argument
+        b_calls["count"] += 1
+        return await b_base(user_id, limit, next_page, **kwargs)
+
+    methods_dict = {
+        "a": dh.make_offset_paged_method(items_a),
+        "b": _b_method,
+        "fill": dh.make_offset_paged_method(items_fill),
+    }
+
+    percentage_cfg = dh._percentage_config(
+        "pct_nested_refill",
+        items=dh._percentage_items(
+            dh._subfeed("sf_a_nested", "a"),
+            dh._subfeed("sf_b_nested", "b"),
+            first_pct=50,
+            second_pct=50,
+        ),
+    )
+
+    config = dh._dedup_config(
+        "dedup_nested_pct_refill",
+        dh._append_config(
+            "append_nested_pct_refill",
+            [percentage_cfg, dh._subfeed("sf_fill_nested_pct", "fill")],
+        ),
+        dedup_key="id",
+        state_backend="cursor",
+        overfetch_factor=3,
+        max_refill_loops=50,
+    )
+
+    merger = parse_model(MergerDeduplication, config)
+    res = await merger.get_data(
+        methods_dict=methods_dict,
+        user_id="u",
+        limit=12,
+        next_page=FeedResultNextPage(data={}),
+    )
+
+    assert len(res.data) == 12
+    dh._assert_no_dupes_in_page(res.data)
+    assert "F" not in set(dh._sources(res.data))
+    assert dh._sources(res.data).count("A") == 6
+    assert dh._sources(res.data).count("B") == 6
+    assert b_calls["count"] > 1
+
+
 @pytest.mark.parametrize(
     "merger_type",
     [

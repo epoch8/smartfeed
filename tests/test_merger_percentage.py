@@ -52,3 +52,21 @@ async def test_merger_percentage_when_one_leaf_is_empty() -> None:
     assert res.data == ["x_4", "x_5", "x_6", "x_7"]
     # The non-empty leaf still reports more pages.
     assert res.has_next_page is True
+
+
+@pytest.mark.asyncio
+async def test_merger_percentage_odd_limit_fills_page_when_sources_have_data() -> None:
+    merger_percentage = parse_model(MergerPercentage, MERGER_PERCENTAGE_CONFIG)
+    res = await merger_percentage.get_data(
+        methods_dict=METHODS_DICT,
+        limit=11,
+        next_page=FeedResultNextPage(
+            data={
+                "subfeed_merger_percentage_example": FeedResultNextPageInside(page=2, after="x_3"),
+                "subfeed_2_merger_percentage_example": FeedResultNextPageInside(page=3, after="x_20"),
+            }
+        ),
+        user_id="x",
+    )
+
+    assert len(res.data) == 11

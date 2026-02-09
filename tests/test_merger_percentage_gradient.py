@@ -71,3 +71,21 @@ async def test_merger_percentage_gradient_next_page() -> None:
         "x_22",
         "x_23",
     ]
+
+
+@pytest.mark.asyncio
+async def test_merger_percentage_gradient_odd_limit_fills_page_when_sources_have_data() -> None:
+    merger_percentage_gradient = parse_model(MergerPercentageGradient, MERGER_PERCENTAGE_GRADIENT_CONFIG)
+    res = await merger_percentage_gradient.get_data(
+        methods_dict=METHODS_DICT,
+        limit=11,
+        next_page=FeedResultNextPage(
+            data={
+                "subfeed_from_merger_percentage_gradient_example": FeedResultNextPageInside(page=2, after="x_3"),
+                "subfeed_to_merger_percentage_gradient_example": FeedResultNextPageInside(page=3, after="x_20"),
+            }
+        ),
+        user_id="x",
+    )
+
+    assert len(res.data) == 11
