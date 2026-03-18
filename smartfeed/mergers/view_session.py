@@ -53,8 +53,9 @@ class MergerViewSession(BaseFeedConfigModel):
         redis_client: Union[redis.Redis, AsyncRedis],
         cache_key: str,
         ctx: ExecutionContext,
+        child_next_page: Optional[FeedResultNextPage] = None,
         **params: Any,
-    ) -> List[Any]:
+    ) -> tuple[List[Any], bool, Optional[FeedResultNextPage]]:
         if ctx.executor is None:
             raise ValueError("Executor must be initialized for MergerViewSession")
 
@@ -67,13 +68,22 @@ class MergerViewSession(BaseFeedConfigModel):
             dedup=inner_dedup,
             refill_settings=ctx.refill_settings if inner_dedup is not None else None,
         )
-        result = await ctx.executor.run(self.data, inner_ctx, self.session_size, FeedResultNextPage(data={}), **params)
+        start_cursor = child_next_page if child_next_page is not None else FeedResultNextPage(data={})
+        result = await ctx.executor.run(self.data, inner_ctx, self.session_size, start_cursor, **params)
 
         data = result.data
         if self.deduplicate:
             data = self._dedup_data(data)
         await _redis_call(redis_client, "set", cache_key, json.dumps(data), ex=self.session_live_time)
-        return data
+
+        meta = {
+            "child_has_next": result.has_next_page,
+            "child_cursor": result.next_page.model_dump(),
+        }
+        await _redis_call(redis_client, "set", f"{cache_key}:meta", json.dumps(meta), ex=self.session_live_time)
+
+        child_cursor = result.next_page if result.has_next_page else None
+        return data, result.has_next_page, child_cursor
 
     async def _get_cache(
         self,
@@ -90,10 +100,14 @@ class MergerViewSession(BaseFeedConfigModel):
         )
 
         logging.info("MergerViewSession cache request for %s", cache_key)
+
+        child_has_next = False
+        child_cursor: Optional[FeedResultNextPage] = None
+
         cache_exists = bool(await _redis_call(redis_client, "exists", cache_key))
         if not cache_exists or self.merger_id not in next_page.data:
             logging.info("Cache miss or new session - generating fresh data for %s", cache_key)
-            session_data = await self._set_cache(
+            session_data, child_has_next, child_cursor = await self._set_cache(
                 redis_client=redis_client,
                 cache_key=cache_key,
                 ctx=ctx,
@@ -106,7 +120,7 @@ class MergerViewSession(BaseFeedConfigModel):
                 logging.info(
                     "Redis returned None for %s - falling back to fresh data (cluster replication issue)", cache_key
                 )
-                session_data = await self._set_cache(
+                session_data, child_has_next, child_cursor = await self._set_cache(
                     redis_client=redis_client,
                     cache_key=cache_key,
                     ctx=ctx,
@@ -116,11 +130,32 @@ class MergerViewSession(BaseFeedConfigModel):
                 logging.info("Successfully read cached data for %s", cache_key)
                 session_data = json.loads(cached_data)
 
+                meta_raw = await _redis_call(redis_client, "get", f"{cache_key}:meta")
+                if meta_raw:
+                    meta = json.loads(meta_raw)
+                    child_has_next = meta.get("child_has_next", False)
+                    child_cursor_data = meta.get("child_cursor")
+                    if child_cursor_data:
+                        child_cursor = FeedResultNextPage.model_validate(child_cursor_data)
+
         page = next_page.data[self.merger_id].page if self.merger_id in next_page.data else 1
+
+        # Session exhausted but child has more data -- rebuild from continuation cursor
+        if (page - 1) * limit >= len(session_data) and child_has_next and child_cursor is not None:
+            logging.info("Session exhausted at page %d for %s - rebuilding with child cursor", page, cache_key)
+            session_data, child_has_next, child_cursor = await self._set_cache(
+                redis_client=redis_client,
+                cache_key=cache_key,
+                ctx=ctx,
+                child_next_page=child_cursor,
+                **params,
+            )
+            page = 1
+
         return FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
             next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
-            has_next_page=bool(len(session_data) > limit * page),
+            has_next_page=bool(len(session_data) > limit * page or child_has_next),
         )
 
     def build_plan(
