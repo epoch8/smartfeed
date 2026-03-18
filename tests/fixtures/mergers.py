@@ -136,3 +136,20 @@ MERGER_VIEW_SESSION_DUPS_CONFIG = {
         "method_name": "doubles",
     },
 }
+
+MERGER_DEDUP_VIEW_SESSION_CONFIG = {
+    "merger_id": "dedup_over_session",
+    "type": "merger_deduplication",
+    "dedup_key": None,
+    "data": {
+        "merger_id": "inner_session",
+        "type": "merger_view_session",
+        "session_size": 60,
+        "session_live_time": 300,
+        "data": {
+            "subfeed_id": "subfeed_dedup_vs",
+            "type": "subfeed",
+            "method_name": "followings",
+        },
+    },
+}

@@ -92,6 +92,27 @@ class DeduplicationPolicy:
         self.seen_request_set.add(key)
         self.store.set_max(key, priority)
 
+    def create_isolated(self) -> "DeduplicationPolicy":
+        """Create an isolated copy for inner execution contexts.
+
+        Uses a fresh in-memory store and empty seen_request_set so that
+        inner priority arbitration works without contaminating the caller's
+        dedup state.
+        """
+        from .seen_store import CursorSeenStore
+
+        return DeduplicationPolicy(
+            dedup_key=self.dedup_key,
+            missing_key_policy=self.missing_key_policy,
+            store=CursorSeenStore(
+                cursor_compress=True,
+                cursor_max_keys=None,
+                seen_priority_map={},
+                seen_order=[],
+            ),
+            seen_request_set=set(),
+        )
+
     async def arbitrate_owner_buffers(
         self,
         *,

@@ -3,9 +3,13 @@ import json
 import pytest
 
 from smartfeed.feed_models import _redis_call
-from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerViewSession
+from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerDeduplication, MergerViewSession
 from tests.fixtures.configs import METHODS_DICT
-from tests.fixtures.mergers import MERGER_VIEW_SESSION_CONFIG, MERGER_VIEW_SESSION_DUPS_CONFIG
+from tests.fixtures.mergers import (
+    MERGER_DEDUP_VIEW_SESSION_CONFIG,
+    MERGER_VIEW_SESSION_CONFIG,
+    MERGER_VIEW_SESSION_DUPS_CONFIG,
+)
 from tests.fixtures.redis import redis_client
 from tests.utils import parse_model
 
@@ -116,3 +120,20 @@ async def test_merger_view_session_deduplication(redis_client) -> None:
     assert merger_vs_res.data == [i for i in range(1, 11)]
     assert len(merger_vs_cache) == merger_vs.session_size
     assert merger_vs_cache[:10] == merger_vs_res.data
+
+
+@pytest.mark.parametrize("redis_client", ["sync", "async"], indirect=True)
+@pytest.mark.asyncio
+async def test_dedup_directly_over_view_session(redis_client) -> None:
+    """Regression: dedup context must not leak into view session cache generation."""
+    merger = parse_model(MergerDeduplication, MERGER_DEDUP_VIEW_SESSION_CONFIG)
+    result = await merger.get_data(
+        methods_dict=METHODS_DICT,
+        limit=20,
+        next_page=FeedResultNextPage(data={}),
+        user_id="x",
+        redis_client=redis_client,
+    )
+    # Currently returns 0 items — all rejected as "seen" during cache build
+    assert len(result.data) == 20
+    assert result.data == [f"x_{i}" for i in range(1, 21)]

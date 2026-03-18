@@ -58,17 +58,16 @@ class MergerViewSession(BaseFeedConfigModel):
         if ctx.executor is None:
             raise ValueError("Executor must be initialized for MergerViewSession")
 
-        # Strip dedup from context to avoid marking items as "seen" during cache build.
-        # Items will be deduped later when returned page-by-page through the parent merger.
-        cache_ctx = ExecutionContext(
+        inner_dedup = ctx.dedup.create_isolated() if ctx.dedup is not None else None
+        inner_ctx = ExecutionContext(
             methods_dict=ctx.methods_dict,
             user_id=ctx.user_id,
             redis_client=ctx.redis_client,
             executor=ctx.executor,
-            dedup=None,
-            refill_settings=None,
+            dedup=inner_dedup,
+            refill_settings=ctx.refill_settings if inner_dedup is not None else None,
         )
-        result = await ctx.executor.run(self.data, cache_ctx, self.session_size, FeedResultNextPage(data={}), **params)
+        result = await ctx.executor.run(self.data, inner_ctx, self.session_size, FeedResultNextPage(data={}), **params)
 
         data = result.data
         if self.deduplicate:

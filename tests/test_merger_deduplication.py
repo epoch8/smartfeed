@@ -868,6 +868,7 @@ async def test_dedup_wrapper_with_view_session_merger(redis_client) -> None:
         custom_view_session_key="vs1",
     )
 
+    assert len(res_1.data) == 10
     dh._assert_two_pages_no_dupes(res_1, res_2)
 
     # Deletion priority: for the overlapping early ids, the winning entity must be from high.
