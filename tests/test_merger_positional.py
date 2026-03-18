@@ -58,7 +58,7 @@ async def test_merger_positional_with_empty_default() -> None:
     """
 
     merger_positional = parse_model(MergerPositional, MERGER_POSITIONAL_CONFIG)
-    merger_positional.default.method_name = "empty"
+    merger_positional.default.method_name = "empty"  # type: ignore[union-attr]
     merger_positional_res = await merger_positional.get_data(
         methods_dict=METHODS_DICT,
         limit=10,

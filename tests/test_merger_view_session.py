@@ -10,7 +10,7 @@ from tests.fixtures.mergers import (
     MERGER_VIEW_SESSION_CONFIG,
     MERGER_VIEW_SESSION_DUPS_CONFIG,
 )
-from tests.fixtures.redis import redis_client
+from tests.fixtures.redis import redis_client  # noqa: F401
 from tests.utils import parse_model
 
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Union
 
 import redis
 from redis.asyncio import Redis as AsyncRedis
+
+if TYPE_CHECKING:
+    from ..policies.dedup import DeduplicationPolicy
 
 
 @dataclass
@@ -22,7 +27,7 @@ class ExecutionContext:
     executor: Any = None
 
     # Policies (optional)
-    dedup: Optional[object] = None
+    dedup: Optional[DeduplicationPolicy] = None
 
     # Execution settings (optional)
     refill_settings: Optional["RefillExecutionSettings"] = None

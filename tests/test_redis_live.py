@@ -1,10 +1,8 @@
 import asyncio
-import json
 import time
 
 import pytest
 import redis
-from redis.asyncio import Redis as AsyncRedis
 
 from smartfeed.schemas import FeedResultNextPage, MergerViewSession
 from tests.fixtures.configs import METHODS_DICT

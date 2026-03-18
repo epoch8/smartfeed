@@ -2,7 +2,7 @@ import asyncio
 import inspect
 from dataclasses import dataclass
 from random import shuffle
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union, cast
 
 import redis
 from pydantic import BaseModel

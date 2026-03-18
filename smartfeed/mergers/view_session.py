@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from random import shuffle
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union
 
 import redis
 from redis.asyncio import Redis as AsyncRedis

@@ -1,11 +1,10 @@
-from typing import Any
 
 import pytest
 
 from smartfeed.feed_models import _redis_call
 from smartfeed.policies.dedup_utils import decode_seen_from_cursor
 from smartfeed.policies.seen_store import CursorSeenStore, RedisSeenStore
-from tests.fixtures.redis import redis_client
+from tests.fixtures.redis import redis_client  # noqa: F401
 
 
 @pytest.mark.asyncio

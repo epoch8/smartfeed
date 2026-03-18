@@ -1,10 +1,10 @@
-from typing import Any, List
+from typing import Any
 
 import pytest
 
 from smartfeed.feed_models import _redis_call
 from smartfeed.policies.dedup_utils import decode_seen_from_cursor, encode_seen_for_cursor, redis_zmscore
-from tests.fixtures.redis import redis_client
+from tests.fixtures.redis import redis_client  # noqa: F401
 
 
 class _RedisNoZmscore:
@@ -67,7 +67,7 @@ async def test_redis_zmscore_pipeline_fallback_for_sync_client_without_zmscore(r
     await _redis_call(redis_client, "zadd", key, mapping={"a": 1.0, "b": 2.0})
 
     wrapped = _RedisNoZmscore(redis_client)
-    res = await redis_zmscore(wrapped, key, ["a", "missing", "b"])
+    res = await redis_zmscore(wrapped, key, ["a", "missing", "b"])  # type: ignore[arg-type]
     assert res == [1.0, None, 2.0]
 
     await _redis_call(redis_client, "delete", key)

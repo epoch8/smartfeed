@@ -48,7 +48,7 @@ async def test_merger_append_with_item_1_page_2() -> None:
 
 @pytest.mark.asyncio
 async def test_merger_append_when_one_leaf_is_empty() -> None:
-    config = copy.deepcopy(MERGER_APPEND_CONFIG)
+    config: dict = copy.deepcopy(MERGER_APPEND_CONFIG)
     # Make the second leaf return no data + has_next_page=False.
     config["items"][1]["method_name"] = "empty"
 

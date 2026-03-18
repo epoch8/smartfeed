@@ -32,7 +32,7 @@ async def test_merger_percentage() -> None:
 
 @pytest.mark.asyncio
 async def test_merger_percentage_when_one_leaf_is_empty() -> None:
-    config = copy.deepcopy(MERGER_PERCENTAGE_CONFIG)
+    config: dict = copy.deepcopy(MERGER_PERCENTAGE_CONFIG)
     # Make the second leaf return no data + has_next_page=False.
     config["items"][1]["data"]["method_name"] = "empty"
 

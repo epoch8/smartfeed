@@ -44,6 +44,9 @@ strict_optional = true
 disallow_any_expr = false
 python_version = "3.10"
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F811"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["tests.py", "test_*.py", "*_test.py"]

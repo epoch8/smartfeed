@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from ..feed_models import BaseFeedConfigModel, FeedResult, FeedResultNextPage
 from .context import ExecutionContext
@@ -52,9 +52,6 @@ class SlotsPlan:
     assemble: Callable[[List[Any], FeedResultNextPage, Dict[int, FeedResult]], Any]
     owner_fetch_limits: Optional[Dict[int, int]] = None
 
-
-# NOTE: `Executor` is imported only for typing to avoid an import cycle.
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .executor import Executor

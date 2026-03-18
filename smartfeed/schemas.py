@@ -6,7 +6,7 @@ moving merger implementations into `smartfeed.mergers.*`.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, Union
+from typing import Annotated, Any, Union
 
 from pydantic import BaseModel, Field
 

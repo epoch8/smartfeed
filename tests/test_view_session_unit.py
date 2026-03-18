@@ -1,13 +1,12 @@
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 
 from smartfeed.feed_models import _redis_call
-from smartfeed.schemas import FeedResultNextPage, FeedResultNextPageInside, MergerViewSession
+from smartfeed.schemas import FeedResultNextPage, MergerViewSession
 from tests.fixtures.configs import METHODS_DICT
 from tests.fixtures.mergers import MERGER_VIEW_SESSION_CONFIG
-from tests.fixtures.redis import redis_client
+from tests.fixtures.redis import redis_client  # noqa: F401
 from tests.utils import parse_model
 
 

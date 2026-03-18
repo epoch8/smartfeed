@@ -10,10 +10,10 @@ from smartfeed.policies.seen_store import CursorSeenStore
 
 class _Owner(BaseFeedConfigModel):
     type: str = "test_owner"
+    name: str = ""
 
-    def __init__(self, *, name: str, **data):
-        super().__init__(**data)
-        object.__setattr__(self, "name", name)
+    def __init__(self, *, name: str, **data):  # type: ignore[override]
+        super().__init__(name=name, **data)  # type: ignore[call-arg]
         object.__setattr__(self, "last_limit", None)
         object.__setattr__(self, "calls", 0)
 
@@ -37,8 +37,8 @@ class _PagedOwner(BaseFeedConfigModel):
     subfeed_id: str
     total: int = 10
 
-    def __init__(self, *, subfeed_id: str, total: int = 10, **data):
-        super().__init__(subfeed_id=subfeed_id, total=total, **data)
+    def __init__(self, *, subfeed_id: str, total: int = 10, **data):  # type: ignore[override]
+        super().__init__(subfeed_id=subfeed_id, total=total, **data)  # type: ignore[call-arg]
         object.__setattr__(self, "calls", 0)
         object.__setattr__(self, "limits", [])
 
