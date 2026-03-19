@@ -152,10 +152,15 @@ class MergerViewSession(BaseFeedConfigModel):
             )
             page = 1
 
+        has_more_in_session = len(session_data) > limit * page
+        can_rebuild = child_has_next and child_cursor is not None
+
         return FeedResult(
             data=session_data[(page - 1) * limit :][:limit],
             next_page=FeedResultNextPage(data={self.merger_id: FeedResultNextPageInside(page=page + 1, after=None)}),
-            has_next_page=bool(len(session_data) > limit * page or child_has_next),
+            # True while the current session still has pages OR the child
+            # can provide a new session (triggers rebuild on the next call).
+            has_next_page=bool(has_more_in_session or can_rebuild),
         )
 
     def build_plan(

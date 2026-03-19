@@ -54,6 +54,28 @@ class ClientMixerClass:
         return FeedResultClient(data=result_data, next_page=next_page, has_next_page=True)
 
     @staticmethod
+    async def large_method(
+        user_id: str,
+        limit: int,
+        next_page: FeedResultNextPageInside,
+        limit_to_return: Optional[int] = None,
+    ) -> FeedResultClient:
+        data = [f"{user_id}_{i}" for i in range(1, 5001)]
+
+        from_index = (data.index(next_page.after) + 1) if next_page.after else 0
+        to_index = from_index + limit
+
+        result_data = data[from_index:to_index]
+
+        if isinstance(limit_to_return, int) and limit_to_return > 0:
+            result_data = result_data[:limit_to_return]
+
+        has_next = to_index < len(data)
+        next_page.after = result_data[-1] if result_data else None
+        next_page.page += 1
+        return FeedResultClient(data=result_data, next_page=next_page, has_next_page=has_next)
+
+    @staticmethod
     async def empty_method(
         user_id: str,  # pylint: disable=W0613
         limit: int,  # pylint: disable=W0613

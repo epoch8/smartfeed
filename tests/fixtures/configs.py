@@ -5,6 +5,7 @@ from smartfeed.examples.example_client import ClientMixerClass
 METHODS_DICT: Dict[str, Callable] = {
     "ads": ClientMixerClass().example_method,
     "followings": ClientMixerClass().example_method,
+    "large": ClientMixerClass().large_method,
     "empty": ClientMixerClass().empty_method,
     "error": ClientMixerClass().error_method,
     "doubles": ClientMixerClass().doubles_method,
