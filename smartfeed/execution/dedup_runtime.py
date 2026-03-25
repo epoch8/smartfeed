@@ -238,14 +238,16 @@ class DedupRuntime:
             if missing_total <= 0:
                 continue
 
-            base_np = owner_results[refill_owner_id].next_page if refill_owner_id in owner_results else plan.next_page
+            owner_res = owner_results.get(refill_owner_id)
+            base_np = owner_res.next_page if owner_res is not None else plan.next_page
+            initial_has_next = bool(owner_res.has_next_page) if owner_res is not None else True
             state[refill_owner_id] = {
                 "missing_total": missing_total,
                 "remaining": missing_total,
                 "accepted": [],
                 "loops": 0,
                 "current_next_page": base_np,
-                "has_next_page": True,
+                "has_next_page": initial_has_next,
             }
 
         if not state:
@@ -368,14 +370,16 @@ class DedupRuntime:
             if missing_total <= 0:
                 continue
 
-            base_np = owner_results[refill_owner_id].next_page if refill_owner_id in owner_results else plan.next_page
+            owner_res = owner_results.get(refill_owner_id)
+            base_np = owner_res.next_page if owner_res is not None else plan.next_page
+            initial_has_next = bool(owner_res.has_next_page) if owner_res is not None else True
             state[refill_owner_id] = {
                 "missing_total": missing_total,
                 "remaining": missing_total,
                 "accepted": [],
                 "loops": 0,
                 "current_next_page": base_np,
-                "has_next_page": True,
+                "has_next_page": initial_has_next,
             }
 
         if not state:
