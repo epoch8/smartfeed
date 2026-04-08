@@ -54,6 +54,7 @@ class Wrapper(BaseNode):
         ctx: Any = None,
         **params: Any,
     ) -> FeedResult:
+        """Entry point. Routes to cached or passthrough path."""
         if self.cache is None or ctx is None or ctx.redis is None:
             return await self._passthrough(methods_dict, session_id, limit, cursor, ctx)
 
@@ -64,7 +65,7 @@ class Wrapper(BaseNode):
     # -- dedup -----------------------------------------------------------------
 
     def _resolve_dedup_priorities(self) -> Dict[str, int]:
-        """Walk the config subtree to build {subfeed_id: priority} map."""
+        """Build {subfeed_id: effective_priority} by walking the config tree."""
         result: Dict[str, int] = {}
         self._collect_priorities(self.data, override_priority=0, out=result)
         return result
@@ -73,6 +74,7 @@ class Wrapper(BaseNode):
     def _collect_priorities(
         node: BaseNode, override_priority: int, out: Dict[str, int]
     ) -> None:
+        """Recursive walk: propagate override_priority down, write SubFeed priorities to out."""
         from .subfeed import SubFeed
 
         # Determine the effective priority for this subtree.
@@ -103,12 +105,7 @@ class Wrapper(BaseNode):
                 Wrapper._collect_priorities(child, effective, out)
 
     def _dedup(self, data: List, seen: Optional[set] = None) -> List:
-        """Deduplicate items by dedup_key with priority arbitration.
-
-        Args:
-            data: items to deduplicate
-            seen: optional external seen-set (for cross-page dedup). Mutated in-place.
-        """
+        """Remove duplicates by dedup_key. Higher dedup_priority wins, equal = first-seen wins."""
         if not self.dedup:
             return data
 
@@ -165,6 +162,7 @@ class Wrapper(BaseNode):
     async def _apply_rerank(
         self, data: list, methods_dict: dict, session_id: str
     ) -> list:
+        """Call rerank callable from methods_dict. Validates output length."""
         if not self.rerank:
             return data
         rerank_fn = methods_dict[self.rerank.method_name]
@@ -186,7 +184,7 @@ class Wrapper(BaseNode):
     # -- debug stamping --------------------------------------------------------
 
     def _stamp_pre_rerank(self, data: list) -> None:
-        """Stamp position before rerank (order from tree/dedup)."""
+        """Stamp smartfeed_position on each item (position before rerank)."""
         for i, item in enumerate(data):
             if isinstance(item, dict):
                 item.setdefault("_smartfeed_debug_info", {})[self.node_id] = {
@@ -194,7 +192,7 @@ class Wrapper(BaseNode):
                 }
 
     def _stamp_post_rerank(self, data: list) -> None:
-        """Stamp position after rerank."""
+        """Stamp rerank_position on each item (position after rerank)."""
         for i, item in enumerate(data):
             if isinstance(item, dict):
                 item.setdefault("_smartfeed_debug_info", {}).setdefault(self.node_id, {})["rerank_position"] = i
@@ -209,6 +207,7 @@ class Wrapper(BaseNode):
         cursor: dict,
         ctx: Any,
     ) -> FeedResult:
+        """No-cache path: fetch -> dedup (with overfetch/refill) -> rerank -> return."""
         if self.dedup:
             # Load persisted seen-set from Redis (cross-page dedup)
             seen_keys = await self._load_seen_set(ctx, session_id)
@@ -258,9 +257,11 @@ class Wrapper(BaseNode):
         )
 
     def _seen_set_key(self, session_id: str) -> str:
+        """Redis key for cross-page dedup seen-set."""
         return f"sf:{session_id}:{self.node_id}:{self.config_hash()}:seen"
 
     async def _load_seen_set(self, ctx: Any, session_id: str) -> set:
+        """Load seen keys from Redis SET for cross-page dedup."""
         if not ctx or not ctx.redis:
             return set()
         key = self._seen_set_key(session_id)
@@ -268,6 +269,7 @@ class Wrapper(BaseNode):
         return {m.decode() if isinstance(m, bytes) else m for m in members} if members else set()
 
     async def _save_seen_set(self, ctx: Any, session_id: str, new_keys: set) -> None:
+        """Append new keys to Redis seen-set and refresh TTL."""
         if not ctx or not ctx.redis or not new_keys:
             return
         key = self._seen_set_key(session_id)
@@ -278,10 +280,12 @@ class Wrapper(BaseNode):
     # -- cache helpers ---------------------------------------------------------
 
     def _base_key(self, session_id: str) -> str:
+        """Redis key prefix for this wrapper's cache data."""
         key_part = self.cache_key or self.node_id
         return f"sf:{session_id}:{key_part}:{self.config_hash()}"
 
     async def _read_cache(self, ctx: Any, session_id: str) -> Optional[List]:
+        """Read cached session data from Redis. Returns None on miss."""
         base = self._base_key(session_id)
         raw = await ctx.redis.get(base)
         if raw is None:
@@ -289,6 +293,7 @@ class Wrapper(BaseNode):
         return orjson.loads(raw)
 
     async def _read_meta(self, ctx: Any, session_id: str) -> Optional[Dict]:
+        """Read cache metadata (gen, child_cursor, child_has_next) from Redis."""
         base = self._base_key(session_id)
         raw = await ctx.redis.get(f"{base}:meta")
         if raw is None:
@@ -304,6 +309,7 @@ class Wrapper(BaseNode):
         child_cursor: Dict,
         child_has_next: bool = False,
     ) -> None:
+        """Write session data and metadata to Redis with TTL."""
         base = self._base_key(session_id)
         ttl = self.cache.session_ttl
 
@@ -317,6 +323,7 @@ class Wrapper(BaseNode):
         await pipe.execute()
 
     async def _touch_ttl(self, ctx: Any, session_id: str) -> None:
+        """Refresh TTL on data and meta keys (keeps cache alive while user scrolls)."""
         if not self.cache:
             return
         base = self._base_key(session_id)
@@ -332,6 +339,7 @@ class Wrapper(BaseNode):
         self, data: List, limit: int, page: int, gen: str,
         child_has_next: bool = False,
     ) -> FeedResult:
+        """Slice cached data for the requested page and build cursor."""
         start = (page - 1) * limit
         end = start + limit
         page_data = data[start:end]
@@ -360,6 +368,7 @@ class Wrapper(BaseNode):
         cursor: dict,
         ctx: Any,
     ) -> FeedResult:
+        """Cached path: warm hit -> paginate, stale/miss -> cold build."""
         my_cursor = cursor.get(self.node_id, {})
         cursor_gen = my_cursor.get("gen")
         cursor_page = my_cursor.get("page", 1)
@@ -400,6 +409,7 @@ class Wrapper(BaseNode):
         return f"sf:{session_id}:{self.cache_key}:{self.data.config_hash()}"
 
     async def _read_shared_base(self, ctx: Any, session_id: str) -> Optional[List]:
+        """Read shared base data from Redis. Returns None on miss."""
         key = self._base_shared_key(session_id)
         raw = await ctx.redis.get(key)
         if raw is None:
@@ -410,6 +420,7 @@ class Wrapper(BaseNode):
         self, ctx: Any, session_id: str, data: List, child_cursor: Dict,
         child_has_next: bool = False,
     ) -> None:
+        """Write shared base data and meta to Redis with TTL."""
         key = self._base_shared_key(session_id)
         ttl = self.cache.session_ttl
         pipe = ctx.redis.pipeline()
@@ -422,6 +433,7 @@ class Wrapper(BaseNode):
         await pipe.execute()
 
     async def _read_shared_base_meta(self, ctx: Any, session_id: str) -> Optional[Dict]:
+        """Read shared base metadata (child_cursor, child_has_next) from Redis."""
         key = self._base_shared_key(session_id)
         raw = await ctx.redis.get(f"{key}:meta")
         if raw is None:
@@ -474,6 +486,7 @@ class Wrapper(BaseNode):
         ctx: Any,
         child_cursor: Dict,
     ) -> FeedResult:
+        """Build full session: fetch -> dedup -> rerank -> write cache -> paginate page 1."""
         session_size = self.cache.session_size
 
         if self.cache_key is not None:

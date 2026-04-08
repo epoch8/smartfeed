@@ -1,229 +1,214 @@
 # SmartFeed
 
-Python-package для формирования ленты (Feed) из клиентских данных с заданной конфигурацией.
+Feed orchestrator. Builds one paginated feed from multiple async data sources using a declarative JSON config.
 
-## Содержание:
+## Quick Start
 
-- [Использование](#использование)
-  - [Установка](#установка)
-  - [Формирование конфигурации](#формирование-конфигурации)
-    - [MergerDeduplication (дедупликация)](#mergerdeduplication-дедупликация)
-    - [Параметры MergerDeduplication](#параметры-mergerdeduplication)
-    - [Важные нюансы (сброс, cursor/redis, overfetch)](#важные-нюансы-сброс-cursorredis-overfetch)
-  - [Требования к клиентскому методу](#требования-к-клиентскому-методу)
-  - [Запуск](#запуск)
+```python
+from smartfeed.manager import FeedManager
 
-## Использование
-
-### Установка
-
-```
-poetry add git+ssh://git@github.com:epoch8/looky-timeline.git
-```
-
-### Формирование конфигурации
-
-Конфигурация каждого фида должна быть словарем следующего вида:
-```
-"version": "1",
-"view_session": True or False,
-"session_size": 800,  # по умолчанию 100
-"session_live_time": 500,  # по умолчанию 300
-"feed": {
-    "merger_id": "merger_pos",
-    "type": "merger_positional",
-    "positions": [1, 3, 15],
-    "start": 17,
-    "end": 200,
-    "step": 2,
-    "positional": {
-        "subfeed_id": "sf_positional",
-        "type": "subfeed",
-        "method_name": "ads",
-        "subfeed_params": {
-            "limit_to_return": 10,
-        },
-    },
-    "default": {
-        "merger_id": "merger_percent",
-        "type": "merger_percentage",
-        "shuffle": False,
-        "items": [
-            {
-                "percentage": 40,
-                "data": {
-                    "subfeed_id": "sf_1_default_merger_of_main",
-                    "type": "subfeed",
-                    "method_name": "followings",
-                },
-            },
-            {
-                "percentage": 60,
-                "data": {
-                    "subfeed_id": "sf_2_default_merger_of_main",
-                    "type": "subfeed",
-                    "method_name": "ads",
-                    "raise_error": True or False (default = True),
-                },
-            },
-        ],
-    },
-},
-```
-
-### MergerDeduplication (дедупликация)
-
-MergerDeduplication — обёртка над одним дочерним узлом (merger или subfeed), которая удаляет дубли по ключу.
-
-Ключевые свойства реализации:
-
-- Дедупликация выполняется на уровне листьев (SubFeed), а не пост-обработкой результата мерджера.
-    Это важно: вложенные мерджеры (positional/percentage/gradient/append/distribute) сохраняют свои правила смешивания.
-    Если элемент удалён как дубль, MergerDeduplication «дозапросит» следующий элемент из того же источника.
-- Состояние «уже видели» может храниться:
-    - в курсоре (state_backend="cursor") — удобно без Redis, но курсор может расти;
-    - в Redis (state_backend="redis") — удобно для большого состояния.
-
-Пример: обернуть существующую конфигурацию фида дедупликацией:
-
-```json
-{
-    "version": "1",
+config = {
+    "version": "2",
     "feed": {
-        "merger_id": "dedup_main",
-        "type": "merger_deduplication",
-        "dedup_key": "id",
-        "missing_key_policy": "error",
-        "state_backend": "cursor",
-        "cursor_compress": true,
-        "cursor_max_keys": 2000,
-        "overfetch_factor": 2,
-        "max_refill_loops": 20,
+        "type": "wrapper",
+        "node_id": "main",
+        "cache": {"session_size": 300, "session_ttl": 300},
+        "dedup": {"dedup_key": "id", "overfetch_factor": 3},
+        "rerank": {"method_name": "my_rerank"},
         "data": {
-            "merger_id": "merger_percent",
             "type": "merger_percentage",
+            "node_id": "mix",
             "items": [
-                {
-                    "percentage": 60,
-                    "data": {
-                        "subfeed_id": "sf_posts",
-                        "type": "subfeed",
-                        "method_name": "posts",
-                        "dedup_priority": 10
-                    }
-                },
-                {
-                    "percentage": 40,
-                    "data": {
-                        "subfeed_id": "sf_ads",
-                        "type": "subfeed",
-                        "method_name": "ads",
-                        "dedup_priority": 0
-                    }
-                }
+                {"percentage": 40, "data": {"type": "subfeed", "subfeed_id": "source_a", "method_name": "source_a"}},
+                {"percentage": 60, "data": {"type": "subfeed", "subfeed_id": "source_b", "method_name": "source_b"}}
             ]
         }
     }
 }
+
+async def source_a(user_id, limit, next_page, **kwargs):
+    # Return FeedResult(data=[...], next_page={...}, has_next_page=True)
+    ...
+
+async def my_rerank(items, session_id):
+    # Return same items in new order. len(result) == len(items).
+    return sorted(items, key=lambda x: x.get("score", 0), reverse=True)
+
+manager = FeedManager(config=config, methods_dict={"source_a": source_a, "source_b": source_b, "my_rerank": my_rerank}, redis_client=redis)
+result = await manager.get_feed(session_id="user_123", limit=20, cursor={})
+# result.data -- list of items
+# result.next_page -- pass back as cursor for next page
+# result.has_next_page -- whether more pages available
 ```
 
-В примере выше, если `posts` и `ads` отдают объекты с одинаковым `id`, то «побеждает» источник с большим `dedup_priority`.
+## Node Types
 
-### Параметры MergerDeduplication
+### SubFeed (leaf)
 
-Обязательные поля:
+Calls an async function from `methods_dict`.
 
-- `merger_id: str` — уникальный ID мерджера.
-- `type: "merger_deduplication"`
-- `data` — ровно один дочерний узел (subfeed или merger).
-
-Поля дедупликации:
-
-- `dedup_key: str | null` — имя ключа/атрибута для поиска дублей.
-    - если `null`, ключом считается сам объект (подходит, когда объекты уже hashable/строковые).
-- `missing_key_policy: "error" | "keep" | "drop"` (default: `"error"`)
-    - `error`: выбросить ошибку, если у элемента нет `dedup_key`;
-    - `keep`: сохранить элемент, даже если ключа нет;
-    - `drop`: выкинуть элемент без ключа.
-
-Состояние seen (межстраничная дедупликация):
-
-- `state_backend: "cursor" | "redis"` (default: `"cursor"`)
-- `state_ttl_seconds: int` (default: `3600`) — TTL для Redis состояния (только для backend=`redis`).
-- `cursor_compress: bool` (default: `true`) — сжимать seen-состояние в cursor backend.
-- `cursor_max_keys: int | null` — ограничить размер seen-состояния в cursor backend (полезно для контроля размера курсора).
-
-Производительность/поведение:
-
-- `overfetch_factor: int` (default: `1`) — «перезапрос» внутри листьев, чтобы быстрее добрать `limit` без множества рефиллов.
-- `max_refill_loops: int` (default: `20`) — верхняя граница количества дозапросов на один лист.
-
-### Важные нюансы (сброс, cursor/redis, overfetch)
-
-- Сброс состояния при `page <= 0` или отсутствии курсора для `merger_id`.
-    - MergerDeduplication воспринимает это как «fresh session» и очищает курсоры всех дочерних узлов.
-    - Для backend=`redis` дополнительно удаляет ключ состояния в Redis.
-
-- Если `state_backend="redis"`, нужно передать `redis_client` в `FeedManager`.
-        - Ключ состояния в Redis строится как `dedup:{merger_id}:{user_id}`.
-        - Можно добавить суффикс через параметр запроса `custom_deduplication_key` (или `custom_view_session_key`),
-            чтобы разделять состояния для разных режимов выдачи.
-
-- Приоритет (`dedup_priority`) — это приоритет победы при конфликте дублей, а не порядок вывода.
-    - Больше `dedup_priority` → элемент «побеждает» и будет считаться seen с этим приоритетом.
-    - Это поле доступно у всех узлов (merger/subfeed) и используется MergerDeduplication при дедупликации.
-
-- overfetch работает безопасно только для «перематываемых» курсоров.
-    - Сейчас overfetch включается только если `next_page.after` у листа — целочисленный offset.
-    - Если `after` — строка/словарь/любой другой объект, он считается непрозрачным и overfetch не применяется.
-
-- Главный реальный bottleneck в дедупликации — не обёртки/копии, а рефиллы.
-    - Если дублей много и upstream-методы дорогие, стоит аккуратно подобрать `overfetch_factor` и `max_refill_loops`.
-
-### Требования к клиентскому методу
-
-Клиентский метод для получения данных должен обязательно включать в себя следующие параметры:
-- **user_id: Any** - ID объекта, на который ориентируемся при получении данных субфида.
-- **limit: int** - Количество возвращаемых данных.
-- **next_page: FeedResultNextPageInside** - Объект курсора пагинации, формируется на стороне клиента после обработки данных.
-
-Возвращаемый тип данных: **FeedResultClient**.
-
-### Запуск
-Для получения ленты с помощью SmartFeed нужно выполнить следующий код:
-
+```json
+{"type": "subfeed", "subfeed_id": "tours", "method_name": "get_tours", "dedup_priority": 1}
 ```
-from smartfeed.manager import FeedManager
-from smartfeed.schemas import FeedResult, FeedResultNextPage, FeedResultNextPageInside
 
-from client.services import ClientService
+Fields:
+- `subfeed_id` -- unique ID, used in cursors and `_smartfeed_debug_info.source`
+- `method_name` -- key in `methods_dict`
+- `subfeed_params` -- static kwargs passed to method (default: `{}`)
+- `raise_error` -- if `false`, swallow errors and return empty (default: `true`)
+- `shuffle` -- shuffle results (default: `false`)
+- `dedup_priority` -- higher = wins dedup conflicts (default: `0`)
 
-config = {} # получаем конфигурацию фида
-methods_dict = {
-    "method_1": ClientService().method_1,
-    "method_2": ClientService().method_2,
-    # и т.д.
+### Wrapper (unified cache + dedup + rerank)
+
+Single node with optional pipeline stages: `fetch -> dedup -> rerank -> cache -> paginate`.
+
+```json
+{
+  "type": "wrapper",
+  "node_id": "pipeline",
+  "cache": {"session_size": 300, "session_ttl": 300},
+  "dedup": {"dedup_key": "id", "overfetch_factor": 3, "max_refill_loops": 5},
+  "rerank": {"method_name": "my_rerank", "raise_error": true},
+  "dedup_priority": 3,
+  "data": { ... }
 }
-# для конфигурации view_session = False,
-# Redis передавать небязательно
-redis_client = redis.Redis()
-
-feed_manager = FeedManager(
-    config=config,
-    methods_dict=methods_dict,
-    redis_client=redis_client,
-)
-
-user_id = "sjjdj?" # любой тип данных
-limit = 100
-next_page = FeedResultNextPage(
-    data={
-        "subfeed_id": FeedResultNextPageInside(page=1, after=None),
-    }
-)
-data: FeedResult = await feed_manager.get_data(
-    user_id=user_id,
-    limit=limit,
-    next_page=next_page,
-)
 ```
+
+All stages are optional. Combinations:
+
+| cache | dedup | rerank | Behavior |
+|-------|-------|--------|----------|
+| yes   | no    | no     | Session cache with Redis pagination |
+| no    | yes   | no     | Per-page dedup with Redis seen-set |
+| yes   | yes   | yes    | Full pipeline: fetch -> dedup -> rerank -> cache |
+| yes   | no    | yes    | Rerank + cache (no dedup) |
+| no    | no    | yes    | Per-page rerank (no cache, stateless) |
+
+#### Cache
+
+```json
+"cache": {"session_size": 300, "session_ttl": 300, "cache_key": null}
+```
+
+- `session_size` -- items to fetch from child and cache
+- `session_ttl` -- Redis TTL (seconds). Acts as inactivity timeout: refreshed on every access
+- `cache_key` -- explicit key for shared cache between wrappers (A/B testing)
+
+#### Dedup
+
+```json
+"dedup": {"dedup_key": "id", "missing_key_policy": "error", "overfetch_factor": 3, "max_refill_loops": 5, "state_ttl": 300}
+```
+
+- `dedup_key` -- field name for duplicate detection
+- `missing_key_policy` -- `"error"` | `"keep"` | `"drop"` (default: `"error"`)
+- `overfetch_factor` -- fetch `limit * factor` to compensate for dedup removals (default: `1`)
+- `max_refill_loops` -- max refill iterations (default: `20`)
+- `state_ttl` -- TTL for Redis seen-set (default: `300`)
+
+Cross-page dedup: seen keys stored in Redis SET `sf:{session_id}:{node_id}:{hash}:seen`.
+
+#### Rerank
+
+```json
+"rerank": {"method_name": "my_rerank", "raise_error": true}
+```
+
+- `method_name` -- key in `methods_dict`, must be `async def(items, session_id) -> items`
+- `raise_error` -- `true` = crash on rerank failure, `false` = keep original order (default: `true`)
+
+Contract: callable returns exactly `len(items)` items. Only reorders.
+
+### Mixer Nodes
+
+**MergerPercentage** -- split by percentage:
+```json
+{"type": "merger_percentage", "node_id": "mix", "items": [{"percentage": 40, "data": {...}}, {"percentage": 60, "data": {...}}]}
+```
+
+**MergerPositional** -- insert at specific positions (1-indexed):
+```json
+{"type": "merger_positional", "node_id": "pos", "positions": [1, 3, 5, 7], "positional": {...}, "default": {...}}
+```
+
+**MergerAppend** -- concatenate children:
+```json
+{"type": "merger_append", "node_id": "append", "items": [{...}, {...}]}
+```
+
+**MergerAppendDistribute** -- round-robin by key:
+```json
+{"type": "merger_distribute", "node_id": "diverse", "distribution_key": "operator_id", "items": [{...}]}
+```
+
+**MergerPercentageGradient** -- shift ratio over pages:
+```json
+{"type": "merger_percentage_gradient", "node_id": "grad", "item_from": {"percentage": 80, "data": {...}}, "item_to": {"percentage": 20, "data": {...}}, "step": 10, "size_to_step": 30}
+```
+
+## dedup_priority
+
+Every node has `dedup_priority: int = 0`. Higher = more important.
+
+- When two items have the same dedup key, the one with higher priority wins
+- Equal priority: first-seen wins (order from mixer children list)
+- Wrapper/mixer with `dedup_priority != 0` overrides all children in that subtree
+- Purely config-based, not stored in items
+
+## _smartfeed_debug_info
+
+SmartFeed stamps metadata on every item:
+
+```python
+item["_smartfeed_debug_info"] = {
+    "source": "recommended_tours",       # subfeed_id
+    "smartfeed_position": 5,             # final position (set by FeedManager)
+    "strategy": "model_hot_users",       # from subfeed (optional)
+    # Per-wrapper positions:
+    "pipeline": {"smartfeed_position": 15, "rerank_position": 3},
+    # Rerank fields (set by rerank callable):
+    "rerank_position": 1,
+    "rrf_score": 0.032,
+    "feature_score": 10683198.0,
+}
+```
+
+## Redis Keys
+
+```
+sf:{session_id}:{node_id}:{config_hash}          -- cached data
+sf:{session_id}:{node_id}:{config_hash}:meta      -- metadata (child cursor, has_next, gen)
+sf:{session_id}:{node_id}:{config_hash}:seen      -- dedup seen-set (SET)
+```
+
+`config_hash` = md5 of config subtree JSON. Change any param -> different hash -> fresh cache.
+
+TTL is an inactivity timeout: refreshed on every request. Cache lives while user scrolls.
+
+## Generation ID
+
+Cached wrappers stamp a `gen` nonce in cursor and Redis `:meta`. If user returns with stale `gen` after cache expired -> full rebuild from page 1.
+
+## Subfeed Method Signature
+
+```python
+async def my_source(user_id: str, limit: int, next_page: dict, **kwargs) -> FeedResult:
+    return FeedResult(data=[...], next_page={"page": 2, "after": ...}, has_next_page=True)
+```
+
+## Installation
+
+```
+pip install epoch8-smartfeed
+```
+
+Requires: Python 3.9+, Pydantic v2, redis (async), orjson.
+
+## Testing
+
+```bash
+pytest tests/ -v
+```
+
+Requires: fakeredis, pytest-asyncio.

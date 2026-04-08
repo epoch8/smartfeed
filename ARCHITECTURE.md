@@ -1,238 +1,150 @@
-# SmartFeed Architecture (medium-brief)
+# SmartFeed Architecture
 
-## 1) What SmartFeed does
+## Overview
 
-SmartFeed builds one paginated feed from multiple client-provided sources (“subfeeds”) using a declarative tree config:
+SmartFeed builds a paginated feed from multiple async data sources using a tree config.
 
-- **Leaf**: `SubFeed` (calls one client method)
-- **Mergers**: compose children (`append`, `distribute`, `positional`, `percentage`, `percentage_gradient`, `view_session`)
-- **Wrapper**: `MergerDeduplication` (changes execution semantics around one child)
+```
+FeedManager.get_feed(session_id, limit, cursor)
+  -> executor.run(root_node, ctx, limit, cursor)
+    -> tree of nodes execute in parallel
+  -> stamp smartfeed_position on results
+  -> return FeedResult
+```
 
-Core runtime:
+## Node Types
 
-- parse config -> create request `ExecutionContext` -> run tree via shared `Executor` -> return `FeedResult` + `next_page`.
+Three types of nodes:
 
+```
+SubFeed (leaf)      -- calls async method from methods_dict
+Wrapper (pipeline)  -- fetch -> dedup -> rerank -> cache -> paginate
+Mixer (coordinator) -- runs children in parallel, assembles results
+```
 
-## 2) Public surfaces and core data types
+## Execution Flow
 
-### Public entrypoint
+```
+                    FeedManager
+                        |
+                    executor.run()
+                        |
+              +---------+---------+
+              |                   |
+         node.execute()    node.build_mix_plan()
+         (SubFeed,Wrapper)      (Mixers)
+                                  |
+                          asyncio.gather(children)
+                                  |
+                           plan.assemble()
+```
 
-- `FeedManager(config, methods_dict, redis_client=None)`
-  - `get_data(user_id, limit, next_page, **params) -> FeedResult`
+### executor.py
 
-`methods_dict` maps config `method_name` strings to host-app callables.
+Module-level functions (no class):
 
-### Config schema surface
+- `run(node, ctx, limit, cursor)` -- dispatches to `node.execute()` or `node.build_mix_plan()`
+- `_execute_mix(plan, ctx, cursor)` -- runs MixPlan children in parallel via `asyncio.gather`
 
-`smartfeed.schemas` keeps stable imports for:
+### Wrapper Pipeline
 
-- `FeedConfig`: top-level model (`version`, `feed`)
-- `FeedTypes`: discriminated union by `type`
+```
+fetch child (session_size or limit)
+  -> dedup (priority arbitration, seen-set from Redis)
+  -> rerank (call methods_dict callable)
+  -> cache (write to Redis with TTL)
+  -> paginate (slice by page from cursor)
+```
 
-### Cursor / pagination models
+Two paths:
+- **Cached** (`self.cache` set): warm = read cache + paginate. Cold = full pipeline.
+- **Passthrough** (no cache): fetch + dedup (with Redis seen-set) + rerank per page.
 
-- `FeedResultNextPageInside`: one node cursor (`page`, `after`)
-- `FeedResultNextPage`: full-tree cursor map (`data: {node_id -> FeedResultNextPageInside}`)
+### MixPlan
 
-### Result models
+Mixers return `MixPlan(children, assemble)`:
 
-- `FeedResultClient`: required return type of client subfeed methods
-- `FeedResult`: normalized return type of any SmartFeed node
+```python
+MixChild(node_id="mix_0", node=subfeed_a, demand=8)   # ask for 8 items
+MixChild(node_id="mix_1", node=subfeed_b, demand=12)  # ask for 12 items
+```
 
+Executor runs all children via `asyncio.gather`, passes results to `assemble(buffers, child_cursors)`.
 
-## 3) Node interface contract
+## Key Models
 
-All nodes inherit `BaseFeedConfigModel` and are executed through:
+### Config (Pydantic v2)
 
-- `get_data(methods_dict, user_id, limit, next_page, redis_client=None, ctx=None, **params) -> FeedResult`
+```
+FeedConfig(version, feed: FeedNode)
+FeedNode = Union[SubFeed, Wrapper, MergerPercentage, MergerPositional, ...]
+```
 
-Important notes:
+Discriminated union on `type` field. Forward refs rebuilt at import time.
 
-- If a node implements `build_plan(...)`, executor uses the plan path.
-- Base `get_data(...)` delegates back to executor and expects `build_plan(...)` to exist.
-- Every node has `dedup_priority: int` (used by dedup arbitration/refill ordering).
+### Runtime
 
+```
+ExecutionContext(session_id, methods_dict, redis)
+FeedResult(data: list, next_page: dict, has_next_page: bool)
+```
 
-## 4) ExecutionContext
+### Output
 
-`ExecutionContext` is per-request state propagated through the tree:
+```
+SmartFeedDebugInfo(source, smartfeed_position, rerank_position?, rrf_score?, ...)
+FeedItem(id, _smartfeed_debug_info: SmartFeedDebugInfo)
+```
 
-- `methods_dict`, `user_id`, `redis_client`
-- `executor` (lazy via `ensure_executor()`)
-- optional policy/settings:
-  - `dedup`: `DeduplicationPolicy` when dedup wrapper is active
-  - `refill_settings`: `RefillExecutionSettings(overfetch_factor, max_refill_loops)`
+## Redis State
 
-Responsibilities:
+```
+sf:{session_id}:{node_id}:{config_hash}        -- cached session data (JSON list)
+sf:{session_id}:{node_id}:{config_hash}:meta    -- metadata (gen, child_cursor, child_has_next)
+sf:{session_id}:{node_id}:{config_hash}:seen    -- dedup seen-set (Redis SET)
+sf:{session_id}:{cache_key}:{hash}              -- shared base cache (for A/B testing)
+sf:{session_id}:{node_id}:{hash}:lock           -- distributed lock (SETNX)
+```
 
-- centralize shared plumbing (executor + redis client)
-- keep execution policies out of user params
+TTL = inactivity timeout. Refreshed on every access via pipeline EXPIRE.
 
+## Dedup
 
-## 5) Executor (runtime engine)
+Two dedup paths, unified `_dedup(data, seen=None)` method:
 
-Primary entry:
+1. **Cached path** (`_fetch_and_dedup`): overfetch + refill loop. Re-dedup combined batches.
+2. **Passthrough path** (`_passthrough`): Redis seen-set for cross-page dedup. SADD new keys after each page.
 
-- `Executor.run(node, ctx, limit, next_page, **params) -> FeedResult`
+Priority arbitration: higher `dedup_priority` wins. Equal = first-seen.
 
-Execution strategy:
+## Config Hash
 
-1. **Plan-first**
-   - `build_plan(...)` -> execute returned `Plan`
-   - otherwise call node `get_data(...)`
-2. **Centralized concurrency**
-   - child runs use executor-managed `asyncio.gather(...)`
-3. **Dedup/refill hooks**
-   - for non-slot nodes with `ctx.dedup`, run `DedupRuntime.run_node_with_dedup_refill(...)`
-   - for `SlotsPlan`, dedup/refill is handled inside slot execution
+`BaseNode.config_hash()` = md5(model_dump_json(sort_keys=True))[:8].
 
-`SlotsPlan` execution highlights:
+Used in Redis keys. Any config change = different hash = fresh cache.
 
-1. collect unique owners + demand per owner
-2. fetch owners concurrently (with optional `owner_fetch_limits` overrides)
-3. merge only changed cursor keys (`CursorMap.merge_delta`)
-4. apply:
-   - dedup arbitration + refill (`apply_slots_plan_dedup`) when `ctx.dedup` exists
-   - refill-only deficits (`apply_slots_plan_refill`) when only `ctx.refill_settings` exists
-5. consume slot schedule and call `assemble(...)`
+## Generation ID
 
-When dedup is active for a slots plan, owners are executed with `dedup=None` in owner context so global arbitration stays centralized.
+Cached wrapper stamps `gen` (random nonce) in cursor and `:meta`. Stale gen = rebuild from scratch.
 
+## Shared Cache
 
-## 6) Plans: declarative execution
+Two wrappers with same `cache_key` share base data. Each applies its own rerank. RedisLock prevents duplicate fetches.
 
-Plans separate “what to run” from “how to run it”.
+## File Structure
 
-- `CallablePlan(fn)`
-  - node-provided async function with custom flow, still executed by executor
-
-- `SlotsPlan(ctx, limit, next_page, params, slots, assemble, owner_fetch_limits=None)`
-  - `slots`: ordered `SlotSpec(owner, max_count)` schedule
-  - `assemble(output, merged_next_page, owner_results)`: builds final `FeedResult`
-
-
-## 7) Mergers and leaf responsibilities
-
-### SubFeed (leaf)
-
-- derives its local cursor from `next_page.data[subfeed_id]` (defaults page=1/after=None)
-- calls `methods_dict[method_name]`
-- passes only params present in method signature + `subfeed_params`
-- async methods are awaited; sync methods run via `asyncio.to_thread(...)`
-- `raise_error=False` converts method failure into empty `FeedResultClient`
-- optional `shuffle` then normalizes to `FeedResult`
-
-### Slot-based mergers
-
-These build `SlotsPlan`:
-
-- `MergerAppend`: concatenation (optional shuffle)
-- `MergerAppendDistribute` (`type="merger_distribute"`): append then redistribute by `distribution_key`
-- `MergerPositional`: page-local slot ownership for `positional` vs `default`, keeps its own merger cursor
-- `MergerPercentage`: integer allocation by percentages; when total is exactly 100, remainder is distributed to avoid underfill
-- `MergerPercentageGradient`: two-owner percentage curve across the page, then advances merger page cursor
-
-### MergerViewSession (Redis-backed session cache)
-
-Goal: cache a session-sized list and serve slices.
-
-Flow:
-
-1. build cache key: `{merger_id}_{user_id}` + optional suffix from `custom_view_session_key`
-2. check Redis `exists`; if no cache or no merger cursor in request -> regenerate session
-3. on hit, `get`; if Redis returns `None` unexpectedly, regenerate
-4. on generation: execute child once for `session_size`, optional dedup, store JSON with TTL
-5. return page slice and increment merger cursor page
-6. optional `shuffle` is applied to returned page slice (cache payload is not reshuffled)
-
-### MergerDeduplication (single-child wrapper)
-
-Goal: deduplicate while keeping child mix/slot semantics.
-
-Key behavior:
-
-- fresh session when merger cursor is absent or `page <= 0`
-  - reset descendant cursors
-  - for Redis backend, reset Redis seen-state key
-- seen-state backend:
-  - `cursor`: encoded into merger cursor `after`
-  - `redis`: ZSET `dedup:{merger_id}:{user_id}` (+ optional custom suffix)
-- builds `DeduplicationPolicy` + child `ExecutionContext(dedup=..., refill_settings=...)`
-- executes child via shared executor, commits store, writes merger cursor (`page+1`, `after` for cursor backend)
-
-Refill/overfetch behavior:
-
-- duplicates trigger bounded refill loops (`max_refill_loops`)
-- overfetch (`overfetch_factor`) is applied only for rewindable integer-offset cursors
-- when overfetch is used, leaf cursor is rewound to inspected-count to avoid skipping unseen items
-
-
-## 8) Dedup policy + seen stores
-
-### DeduplicationPolicy
-
-Owns key extraction + acceptance rules:
-
-- entity key from `dedup_key` + `missing_key_policy`
-- reject duplicates already seen in current response (`seen_request_set`)
-- compare candidate priority vs persisted seen priority
-
-Capabilities:
-
-- batched prefetch from store
-- per-owner arbitration with deterministic tie-break: `(-dedup_priority, owner_rank, item_rank)`
-- ordered single-stream acceptance (`accept_batch`) returning accepted items + inspected count
-
-### Seen stores
-
-- `CursorSeenStore`
-  - in-cursor map of `{key -> max_priority}`
-  - optional compression + max-key trimming at commit
-
-- `RedisSeenStore`
-  - cached reads via `redis_zmscore(...)`
-  - buffered writes via `redis_zadd_and_expire(...)`
-
-
-## 9) Redis/JSON helpers
-
-- `_redis_call(client, method_name, *args, **kwargs)`
-  - async redis client: direct await
-  - sync redis client: `asyncio.to_thread(...)`
-
-Other helpers:
-
-- `jsonlib`: thin `orjson` wrapper compatible with package usage (`dumps`/`loads`)
-- `dedup_utils`: cursor encode/decode + Redis ZSET helper fallbacks (`zmscore` / pipeline)
-
-
-## 10) End-to-end call flows
-
-### A) Standard request (no view session, no dedup)
-
-1. `FeedManager.get_data(...)` builds `ExecutionContext`
-2. `Executor.run(root, ctx, limit, next_page)`
-3. recursive execution via plans or direct `get_data(...)`
-4. returns `FeedResult(data, next_page, has_next_page)`
-
-### B) Slot-based merger request
-
-1. merger returns `SlotsPlan`
-2. executor fetches owners concurrently
-3. optional arbitration/refill runs
-4. slots are consumed in schedule order
-5. `assemble(...)` builds final result
-
-### C) Dedup wrapper request
-
-1. wrapper creates store + policy and child context
-2. child executes under dedup/refill control
-3. executor performs acceptance/arbitration + bounded refills
-4. store commits; wrapper writes merger cursor state
-
-### D) View-session request
-
-1. wrapper resolves cache key
-2. cache miss/new session -> regenerate and cache
-3. cache hit -> load session list from Redis
-4. return requested slice + advanced merger page
+```
+smartfeed/
+  models/
+    base.py         -- BaseNode, FeedResult, SmartFeedDebugInfo, FeedItem, config_hash
+    subfeed.py      -- SubFeed (leaf)
+    wrapper.py      -- Wrapper (cache + dedup + rerank pipeline)
+    mixers.py       -- Percentage, Positional, Append, Distribute, Gradient
+    __init__.py     -- FeedNode union, FeedConfig, exports
+  execution/
+    executor.py     -- run(), _execute_mix() (module-level functions)
+    context.py      -- ExecutionContext
+    plans.py        -- MixPlan, MixChild
+    redis_lock.py   -- RedisLock (SETNX async context manager)
+  manager.py        -- FeedManager (public entry point)
+```
