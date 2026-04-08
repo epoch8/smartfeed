@@ -1,42 +1,43 @@
-from typing import Any, Dict, Optional, Union
+from __future__ import annotations
 
-import redis
-from redis.asyncio import Redis as AsyncRedis
+from typing import Any, Dict, Optional
 
 from .execution.context import ExecutionContext
-from .pydantic_compat import parse_model
-from .schemas import FeedConfig, FeedResult, FeedResultNextPage
+from .execution import executor as _executor
+from .models import FeedConfig
+from .models.base import FeedResult
 
 
 class FeedManager:
-    """
-    Класс FeedManager.
-    """
-
-    def __init__(self, config: Dict, methods_dict: Dict, redis_client: Optional[Union[redis.Redis, AsyncRedis]] = None):
-        """
-        Инициализация класса FeedManager.
-
-        :param config: конфигурация.
-        :param methods_dict: словарь с используемыми методами.
-        :param redis_client: объект клиента Redis (для конфигурации с view_session = True).
-        """
-
-        self.feed_config = parse_model(FeedConfig, config)
+    def __init__(
+        self,
+        config: Dict,
+        methods_dict: Dict,
+        redis_client: Optional[Any] = None,
+    ) -> None:
+        if hasattr(FeedConfig, "model_validate"):
+            # Pydantic v2
+            self.config = FeedConfig.model_validate(config)
+        else:
+            # Pydantic v1
+            self.config = FeedConfig.parse_obj(config)
         self.methods_dict = methods_dict
         self.redis_client = redis_client
 
-    async def get_data(self, user_id: Any, limit: int, next_page: FeedResultNextPage, **params: Any) -> FeedResult:
-        """
-        Метод для получения данных согласно конфигурации.
-
-        :param user_id: ID объекта для получения данных (например, ID пользователя).
-        :param limit: лимит на выдачу данных.
-        :param next_page: курсор для пагинации в формате SmartFeedResultNextPage.
-        :param params: любые внешние параметры, передаваемые в исполняемую функцию на клиентской стороне.
-        :return: результат получения данных согласно конфигурации фида.
-        """
-
-        ctx = ExecutionContext(methods_dict=self.methods_dict, user_id=user_id, redis_client=self.redis_client)
-        executor = ctx.ensure_executor()
-        return await executor.run(self.feed_config.feed, ctx, limit, next_page, **params)
+    async def get_feed(
+        self,
+        session_id: str,
+        limit: int,
+        cursor: Optional[Dict] = None,
+    ) -> FeedResult:
+        cursor = cursor or {}
+        ctx = ExecutionContext(
+            session_id=session_id,
+            methods_dict=self.methods_dict,
+            redis=self.redis_client,
+        )
+        result = await _executor.run(self.config.feed, ctx, limit, cursor)
+        for i, item in enumerate(result.data):
+            if isinstance(item, dict):
+                item.setdefault("_smartfeed_debug_info", {})["smartfeed_position"] = i
+        return result
