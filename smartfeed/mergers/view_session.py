@@ -8,10 +8,11 @@ import redis
 from redis.asyncio import Redis as AsyncRedis
 
 from .. import jsonlib as json
-from ..execution.context import ExecutionContext
+from ..execution.context import ExecutionContext, RefillExecutionSettings
 from ..execution.executor import CallablePlan
 from ..feed_models import BaseFeedConfigModel, FeedResult, FeedResultNextPage, FeedResultNextPageInside, _redis_call
-from ..policies.dedup import entity_key
+from ..policies.dedup import DeduplicationPolicy, entity_key
+from ..policies.seen_store import CursorSeenStore
 
 if TYPE_CHECKING:
     from ..schemas import FeedTypes
@@ -59,14 +60,36 @@ class MergerViewSession(BaseFeedConfigModel):
         if ctx.executor is None:
             raise ValueError("Executor must be initialized for MergerViewSession")
 
-        inner_dedup = ctx.dedup.create_isolated() if ctx.dedup is not None else None
+        if ctx.dedup is not None:
+            inner_dedup: Optional[DeduplicationPolicy] = ctx.dedup.create_isolated()
+            inner_refill = ctx.refill_settings
+        elif self.deduplicate and self.dedup_key:
+            # No ambient dedup policy, but this session owns deduplication. Build a
+            # priority-aware policy so the inner mixers (e.g. MergerPercentage) keep the
+            # higher-priority copy of shared ids instead of the first-by-position one,
+            # and let the existing refill machinery top sources back up to their quota.
+            inner_dedup = DeduplicationPolicy(
+                dedup_key=self.dedup_key,
+                missing_key_policy=self.missing_key_policy,
+                store=CursorSeenStore(
+                    cursor_compress=True,
+                    cursor_max_keys=None,
+                    seen_priority_map={},
+                    seen_order=[],
+                ),
+                seen_request_set=set(),
+            )
+            inner_refill = ctx.refill_settings or RefillExecutionSettings(overfetch_factor=5, max_refill_loops=2)
+        else:
+            inner_dedup = None
+            inner_refill = None
         inner_ctx = ExecutionContext(
             methods_dict=ctx.methods_dict,
             user_id=ctx.user_id,
             redis_client=ctx.redis_client,
             executor=ctx.executor,
             dedup=inner_dedup,
-            refill_settings=ctx.refill_settings if inner_dedup is not None else None,
+            refill_settings=inner_refill,
         )
         start_cursor = child_next_page if child_next_page is not None else FeedResultNextPage(data={})
         result = await ctx.executor.run(self.data, inner_ctx, self.session_size, start_cursor, **params)
