@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/tests.yaml"
       - "smartfeed/**"
+      - "tests/**"
       - "pyproject.toml"
 
 jobs:
