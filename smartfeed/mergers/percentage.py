@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from random import shuffle
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, cast
 
 from pydantic import BaseModel
 
@@ -29,28 +29,39 @@ class MergerPercentage(BaseFeedConfigModel):
     shuffle: bool = False
 
     @staticmethod
-    def _merge_items_data(items_data: List[List]) -> List:
+    def _merge_items_data(items_data: List[List], weights: Optional[List[int]] = None) -> List:
+        """Interleave sources keeping the TARGET ratio from the front.
+
+        Uses a smooth weighted round-robin: at each step the source that is most
+        "behind" its target share (lowest emitted/weight) and still has items is
+        emitted next. This front-loads the configured percentages -- a scarce
+        source keeps its target share on the early output and then drops out,
+        instead of being smeared thinly across the whole result.
+        """
+        n = len(items_data)
+        if weights is None or len(weights) != n:
+            weights = [1] * n
+        safe_weights = [w if isinstance(w, int) and w > 0 else 1 for w in weights]
+
+        pointers = [0] * n
+        emitted = [0] * n
+        total = sum(len(item_data) for item_data in items_data)
         result: List = []
-        cursor: List[Dict] = []
 
-        min_length = min(len(item_data) for item_data in items_data) or 1
-        for item_data in items_data:
-            cursor.append(
-                {
-                    "items": item_data,
-                    "current": 0,
-                    "size": round(len(item_data) / min_length),
-                }
-            )
-
-        full_length = sum(len(item_data) for item_data in items_data)
-        while len(result) < full_length:
-            for item_cursor in cursor:
-                items = item_cursor["items"]
-                start = item_cursor["current"]
-                end = start + item_cursor["size"] if start + item_cursor["size"] < len(items) else len(items)
-                result.extend(items[start:end])
-                item_cursor["current"] = end
+        while len(result) < total:
+            best = -1
+            best_score: Optional[float] = None
+            for i in range(n):
+                if pointers[i] >= len(items_data[i]):
+                    continue
+                score = emitted[i] / safe_weights[i]
+                if best_score is None or score < best_score:
+                    best, best_score = i, score
+            if best < 0:
+                break
+            result.append(items_data[best][pointers[best]])
+            pointers[best] += 1
+            emitted[best] += 1
 
         return result
 
@@ -104,7 +115,8 @@ class MergerPercentage(BaseFeedConfigModel):
                 items_data.append(list(child_res.data))
                 has_next_page = has_next_page or bool(child_res.has_next_page)
 
-            data = self._merge_items_data(items_data=items_data)
+            weights = [int(item.percentage) for item in self.items]
+            data = self._merge_items_data(items_data=items_data, weights=weights)
             if self.shuffle:
                 shuffle(data)
 

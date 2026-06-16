@@ -27,7 +27,8 @@ async def test_merger_percentage() -> None:
         user_id="x",
     )
 
-    assert merger_percentage_res.data == ["x_4", "x_21", "x_22", "x_5", "x_23", "x_24", "x_6", "x_25", "x_26", "x_7"]
+    # Smooth weighted round-robin at the 40/60 target ratio (front-loaded).
+    assert merger_percentage_res.data == ["x_4", "x_21", "x_22", "x_5", "x_23", "x_6", "x_24", "x_25", "x_7", "x_26"]
 
 
 @pytest.mark.asyncio
