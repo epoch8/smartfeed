@@ -370,14 +370,18 @@ class TestMissingDedupKeyPolicies:
 
     @staticmethod
     async def _make_items_with_missing_key(user_id, limit, next_page, **kw):
-        """Half of the items have 'id', half do not."""
+        """Half of the items have 'id', half do not. Stateful (advances by page) so a
+        dedup refill fetches genuinely new items instead of regenerating seen ids."""
+        page = next_page.get("page", 1)
+        start = (page - 1) * limit
         data = []
         for i in range(limit):
-            if i % 2 == 0:
-                data.append({"id": i, "val": f"has_id_{i}"})
+            gid = start + i
+            if gid % 2 == 0:
+                data.append({"id": gid, "val": f"has_id_{gid}"})
             else:
-                data.append({"val": f"no_id_{i}"})  # no 'id' key
-        return FeedResult(data=data, next_page={"page": 2}, has_next_page=True)
+                data.append({"val": f"no_id_{gid}"})  # no 'id' key
+        return FeedResult(data=data, next_page={"page": page + 1}, has_next_page=True)
 
     def _make_methods(self):
         return {"missing_key": self._make_items_with_missing_key}

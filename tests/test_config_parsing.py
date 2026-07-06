@@ -23,7 +23,7 @@ def test_config_hash_changes_with_params():
 
 
 def test_parse_simple_subfeed():
-    cfg = FeedConfig.parse_obj({
+    cfg = FeedConfig.model_validate({
         "version": "2",
         "feed": {"type": "subfeed", "subfeed_id": "x", "method_name": "items"},
     })
@@ -31,7 +31,7 @@ def test_parse_simple_subfeed():
 
 
 def test_parse_wrapper_with_cache():
-    cfg = FeedConfig.parse_obj({
+    cfg = FeedConfig.model_validate({
         "version": "2",
         "feed": {
             "type": "wrapper", "node_id": "w",
@@ -43,7 +43,7 @@ def test_parse_wrapper_with_cache():
 
 
 def test_parse_nested_config():
-    cfg = FeedConfig.parse_obj({
+    cfg = FeedConfig.model_validate({
         "version": "2",
         "feed": {
             "type": "wrapper", "node_id": "outer",

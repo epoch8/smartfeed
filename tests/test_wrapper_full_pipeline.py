@@ -36,7 +36,7 @@ def ctx(redis):
 
 @pytest.mark.asyncio
 async def test_full_pipeline(ctx):
-    config = FeedConfig.parse_obj({
+    config = FeedConfig.model_validate({
         "version": "2",
         "feed": {
             "type": "wrapper", "node_id": "full",

@@ -32,5 +32,8 @@ class RedisLock:
         if not self._owned:
             return
         val = await self._redis.get(self._key)
-        if val and val.decode() == self._token:
-            await self._redis.delete(self._key)
+        if val is not None:
+            # Redis clients configured with decode_responses=True return str, not bytes.
+            token = val.decode() if isinstance(val, bytes) else val
+            if token == self._token:
+                await self._redis.delete(self._key)

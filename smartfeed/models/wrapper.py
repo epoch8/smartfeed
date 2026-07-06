@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import secrets
 from typing import Any, Dict, List, Literal, Optional
 
@@ -9,6 +11,11 @@ from pydantic import BaseModel, model_validator
 import orjson
 from smartfeed.execution import executor as _executor
 from .base import BaseNode, FeedResult, coerce_feed_node
+
+# Safety bound for the dedup refill loop: stop scanning after this many fetched items
+# per `target` when the child keeps yielding duplicates (guards against a misbehaving
+# source that returns has_next=True forever). Well above any realistic duplicate rate.
+_REFILL_SCAN_FACTOR = 50
 
 
 class WrapperCache(BaseModel):
@@ -24,6 +31,10 @@ class WrapperRerank(BaseModel):
 class WrapperDedup(BaseModel):
     dedup_key: str
     missing_key_policy: Literal["error", "keep", "drop"] = "error"
+    # Deprecated / no effect: the dedup fetch now pulls exactly the outstanding
+    # deficit and refills until the target is filled or the child is exhausted, so
+    # it neither over-fetches (no item loss) nor gives up early (no short pages).
+    # Kept for config back-compat.
     overfetch_factor: int = 4
     max_refill_loops: int = 2
     state_ttl: int = 300  # TTL for Redis seen-set (seconds)
@@ -135,8 +146,10 @@ class Wrapper(BaseNode):
 
             key_val = str(item[key_field])
 
-            # Cross-page: already seen on previous pages
-            if key_val in seen:
+            # Cross-page / cross-rebuild: already shown earlier in this scroll.
+            # `key_val in batch` means it is a *within-batch* duplicate, which must
+            # fall through to priority arbitration below rather than be skipped here.
+            if key_val in seen and key_val not in batch:
                 continue
 
             # In-batch priority arbitration
@@ -207,33 +220,33 @@ class Wrapper(BaseNode):
         cursor: dict,
         ctx: Any,
     ) -> FeedResult:
-        """No-cache path: fetch -> dedup (with overfetch/refill) -> rerank -> return."""
+        """No-cache path: fetch -> dedup (refill to a full page) -> rerank -> return."""
         if self.dedup:
-            # Load persisted seen-set from Redis (cross-page dedup)
+            # Cross-page seen-set from Redis (persists shown ids across pages).
             seen_keys = await self._load_seen_set(ctx, session_id)
 
-            overfetch = self.dedup.overfetch_factor
-            max_loops = self.dedup.max_refill_loops
-            fetch_size = limit * overfetch
             current_cursor = dict(cursor)
+            data: List = []
+            has_next = True
+            scanned = 0
+            scan_cap = max(limit, 1) * _REFILL_SCAN_FACTOR
 
-            result = await _executor.run(self.data, ctx, fetch_size, current_cursor)
-            data = self._dedup(result.data, seen_keys)
-            current_cursor = result.next_page
-            has_next = result.has_next_page
-
-            loop = 0
-            while len(data) < limit and has_next and loop < max_loops:
-                deficit = limit - len(data)
-                result = await _executor.run(self.data, ctx, deficit * overfetch, current_cursor)
-                data.extend(self._dedup(result.data, seen_keys))
+            # Passthrough has no buffer, so it must never over-fetch: pull exactly the
+            # outstanding deficit each round and refill until the page is full or the
+            # child is exhausted. Nothing is discarded, so nothing is lost. Keep scanning
+            # through duplicate runs (don't stop on a single all-duplicate window), bounded
+            # by scan_cap so a duplicate-only source can't spin forever.
+            while len(data) < limit and has_next and scanned < scan_cap:
+                need = limit - len(data)
+                result = await _executor.run(self.data, ctx, need, current_cursor)
                 current_cursor = result.next_page
                 has_next = result.has_next_page
-                loop += 1
+                if not result.data:
+                    break  # child yielded nothing -> stop instead of spinning
+                scanned += len(result.data)
+                data.extend(self._dedup(result.data, seen_keys))
 
-            data = data[:limit]
-
-            # Persist seen-set to Redis for next page
+            # Persist seen-set to Redis for the next page.
             new_keys = set()
             key_field = self.dedup.dedup_key
             for item in data:
@@ -276,6 +289,12 @@ class Wrapper(BaseNode):
         await ctx.redis.sadd(key, *new_keys)
         ttl = self.dedup.state_ttl
         await ctx.redis.expire(key, ttl)
+
+    async def _reset_seen_set(self, ctx: Any, session_id: str) -> None:
+        """Clear the seen-set so a fresh scroll (empty cursor) starts from page 1."""
+        if not ctx or not ctx.redis:
+            return
+        await ctx.redis.delete(self._seen_set_key(session_id))
 
     # -- cache helpers ---------------------------------------------------------
 
@@ -336,18 +355,21 @@ class Wrapper(BaseNode):
     # -- pagination ------------------------------------------------------------
 
     def _paginate(
-        self, data: List, limit: int, page: int, gen: str,
+        self, data: List, limit: int, offset: int, gen: str,
         child_has_next: bool = False,
     ) -> FeedResult:
-        """Slice cached data for the requested page and build cursor."""
-        start = (page - 1) * limit
-        end = start + limit
-        page_data = data[start:end]
+        """Slice cached data at an absolute offset and build the next cursor.
+
+        The cursor carries an absolute offset (not a page number), so pagination stays
+        correct even if the client varies `limit` between requests.
+        """
+        end = offset + limit
+        page_data = data[offset:end]
         has_next = end < len(data) or child_has_next
 
         next_cursor = {
             self.node_id: {
-                "page": page + 1,
+                "offset": end,
                 "gen": gen,
             }
         }
@@ -371,7 +393,7 @@ class Wrapper(BaseNode):
         """Cached path: warm hit -> paginate, stale/miss -> cold build."""
         my_cursor = cursor.get(self.node_id, {})
         cursor_gen = my_cursor.get("gen")
-        cursor_page = my_cursor.get("page", 1)
+        cursor_offset = my_cursor.get("offset", 0)
 
         # Warm path: try to read existing cache
         if cursor_gen:
@@ -379,17 +401,16 @@ class Wrapper(BaseNode):
             if meta and meta.get("gen") == cursor_gen:
                 cached_data = await self._read_cache(ctx, session_id)
                 if cached_data is not None:
-                    # Check if we have enough data for this page
-                    start = (cursor_page - 1) * limit
-                    if start < len(cached_data):
+                    # Serve from cache while this offset is still within the batch.
+                    if cursor_offset < len(cached_data):
                         await self._touch_ttl(ctx, session_id)
                         child_has_next = meta.get("child_has_next", bool(meta.get("child_cursor")))
                         return self._paginate(
-                            cached_data, limit, cursor_page, cursor_gen,
+                            cached_data, limit, cursor_offset, cursor_gen,
                             child_has_next=child_has_next,
                         )
                     # Cache exhausted: rebuild with continuation cursor
-                    return await self._cold_build(
+                    return await self._cold_build_locked(
                         methods_dict,
                         session_id,
                         limit,
@@ -398,43 +419,92 @@ class Wrapper(BaseNode):
                     )
 
         # Cold path: no gen or stale gen -> fresh build
-        return await self._cold_build(
+        return await self._cold_build_locked(
             methods_dict, session_id, limit, ctx, child_cursor={}
         )
 
+    async def _cold_build_locked(
+        self,
+        methods_dict: dict,
+        session_id: str,
+        limit: int,
+        ctx: Any,
+        child_cursor: Dict,
+    ) -> FeedResult:
+        """Cold build guarded by a lock so concurrent first requests fetch the child
+        ONCE: one caller builds and writes the cache, the rest wait and serve from it.
+        A fresh/continuation build always serves the new batch from offset 0."""
+        from smartfeed.execution.redis_lock import RedisLock
+
+        lock_key = f"{self._base_key(session_id)}:coldlock"
+        async with RedisLock(ctx.redis, lock_key, ttl=30) as acquired:
+            if acquired:
+                return await self._cold_build(
+                    methods_dict, session_id, limit, ctx, child_cursor
+                )
+            # Another coroutine is building -- wait for its cache, then serve page 1.
+            for _ in range(50):
+                await asyncio.sleep(0.1)
+                meta = await self._read_meta(ctx, session_id)
+                if meta:
+                    cached = await self._read_cache(ctx, session_id)
+                    if cached is not None:
+                        child_has_next = meta.get(
+                            "child_has_next", bool(meta.get("child_cursor"))
+                        )
+                        return self._paginate(
+                            cached, limit, 0, meta.get("gen", ""),
+                            child_has_next=child_has_next,
+                        )
+            # Fallback: builder never wrote -> build ourselves.
+            return await self._cold_build(
+                methods_dict, session_id, limit, ctx, child_cursor
+            )
+
     # -- shared base cache helpers ----------------------------------------------
 
-    def _base_shared_key(self, session_id: str) -> str:
-        """Key for the shared base cache (deduped, NOT reranked), keyed by cache_key."""
-        return f"sf:{session_id}:{self.cache_key}:{self.data.config_hash()}"
+    @staticmethod
+    def _cursor_segment(child_cursor: Dict) -> str:
+        """Stable short tag for a continuation position, so each page-window of the
+        shared base is its own segment (page 1 = "0")."""
+        if not child_cursor:
+            return "0"
+        raw = json.dumps(child_cursor, sort_keys=True, default=str)
+        return hashlib.md5(raw.encode()).hexdigest()[:8]
 
-    async def _read_shared_base(self, ctx: Any, session_id: str) -> Optional[List]:
-        """Read shared base data from Redis. Returns None on miss."""
-        key = self._base_shared_key(session_id)
+    def _base_shared_key(self, session_id: str, child_cursor: Dict) -> str:
+        """Key for a shared-base segment (deduped, NOT reranked), keyed by cache_key
+        and the continuation position so continuations don't collide with page 1."""
+        seg = self._cursor_segment(child_cursor)
+        return f"sf:{session_id}:{self.cache_key}:{self.data.config_hash()}:{seg}"
+
+    async def _read_shared_base(self, ctx: Any, session_id: str, child_cursor: Dict) -> Optional[List]:
+        """Read a shared-base segment from Redis. Returns None on miss."""
+        key = self._base_shared_key(session_id, child_cursor)
         raw = await ctx.redis.get(key)
         if raw is None:
             return None
         return orjson.loads(raw)
 
     async def _write_shared_base(
-        self, ctx: Any, session_id: str, data: List, child_cursor: Dict,
-        child_has_next: bool = False,
+        self, ctx: Any, session_id: str, child_cursor: Dict, data: List,
+        child_cursor_out: Dict, child_has_next: bool = False,
     ) -> None:
-        """Write shared base data and meta to Redis with TTL."""
-        key = self._base_shared_key(session_id)
+        """Write a shared-base segment and its meta to Redis with TTL."""
+        key = self._base_shared_key(session_id, child_cursor)
         ttl = self.cache.session_ttl
         pipe = ctx.redis.pipeline()
         pipe.set(key, orjson.dumps(data), ex=ttl)
         pipe.set(
             f"{key}:meta",
-            orjson.dumps({"child_cursor": child_cursor, "child_has_next": child_has_next}),
+            orjson.dumps({"child_cursor": child_cursor_out, "child_has_next": child_has_next}),
             ex=ttl,
         )
         await pipe.execute()
 
-    async def _read_shared_base_meta(self, ctx: Any, session_id: str) -> Optional[Dict]:
-        """Read shared base metadata (child_cursor, child_has_next) from Redis."""
-        key = self._base_shared_key(session_id)
+    async def _read_shared_base_meta(self, ctx: Any, session_id: str, child_cursor: Dict) -> Optional[Dict]:
+        """Read a shared-base segment's metadata (child_cursor, child_has_next)."""
+        key = self._base_shared_key(session_id, child_cursor)
         raw = await ctx.redis.get(f"{key}:meta")
         if raw is None:
             return None
@@ -445,38 +515,41 @@ class Wrapper(BaseNode):
         ctx: Any,
         target: int,
         child_cursor: Dict,
+        seen: Optional[set] = None,
     ) -> tuple:
-        """Fetch target items from child with overfetch + refill loop for dedup.
+        """Collect up to `target` deduped items from the child.
+
+        Fetches exactly the outstanding deficit each round and keeps EVERY survivor
+        (never truncates, never advances the child cursor past an unconsumed unique),
+        so no item is lost. Refills until `target` unique items are collected or the
+        child is exhausted, so pages fill under dedup attrition instead of coming up
+        short. `seen`, if given, holds keys already shown earlier in this scroll (so
+        they are not repeated across a rebuild boundary); `_dedup` mutates it in place
+        with the keys emitted here.
 
         Returns (data, child_cursor, child_has_next).
         """
-        overfetch = self.dedup.overfetch_factor if self.dedup else 1
-        max_loops = self.dedup.max_refill_loops if self.dedup else 0
-        fetch_size = target * overfetch
         cursor = dict(child_cursor)
+        data: List = []
+        has_next = True
+        scanned = 0
+        scan_cap = max(target, 1) * _REFILL_SCAN_FACTOR
 
-        # First fetch
-        result = await _executor.run(self.data, ctx, fetch_size, cursor)
-        data = self._dedup(result.data) if self.dedup else result.data
-        cursor = result.next_page
-        has_next = result.has_next_page
-
-        # Refill loop: keep fetching if dedup ate too many items.
-        # Accumulate seen keys so refill batches are deduped against all prior items.
-        loop = 0
-        while len(data) < target and has_next and loop < max_loops:
-            deficit = target - len(data)
-            refill_size = deficit * overfetch
-            result = await _executor.run(self.data, ctx, refill_size, cursor)
-            # Dedup refill against ALL accumulated data
-            combined = data + result.data
-            combined = self._dedup(combined) if self.dedup else combined
-            data = combined
+        # Keep scanning through duplicate runs until `target` unique items are
+        # collected or the child is exhausted; bounded by scan_cap so a
+        # duplicate-only source can't spin forever.
+        while len(data) < target and has_next and scanned < scan_cap:
+            need = target - len(data)
+            result = await _executor.run(self.data, ctx, need, cursor)
             cursor = result.next_page
             has_next = result.has_next_page
-            loop += 1
+            if not result.data:
+                break  # child yielded nothing -> stop instead of spinning
+            scanned += len(result.data)
+            new = self._dedup(result.data, seen) if self.dedup else result.data
+            data.extend(new)
 
-        return data[:target], cursor, has_next
+        return data, cursor, has_next
 
     async def _cold_build(
         self,
@@ -491,12 +564,12 @@ class Wrapper(BaseNode):
 
         if self.cache_key is not None:
             # Shared cache path: base data (fetch + dedup) is shared across wrappers
-            # with the same cache_key; rerank is applied per-wrapper after.
+            # with the same cache_key; rerank is applied per-wrapper after. Each
+            # continuation position is a distinct shared segment (see _base_shared_key).
             base_data = await self._build_shared_base(
                 methods_dict, session_id, ctx, child_cursor
             )
-            # Read child_cursor from shared base meta for continuation
-            shared_meta = await self._read_shared_base_meta(ctx, session_id)
+            shared_meta = await self._read_shared_base_meta(ctx, session_id, child_cursor)
             child_cursor_out = shared_meta.get("child_cursor", {}) if shared_meta else {}
             child_has_next = shared_meta.get("child_has_next", False) if shared_meta else False
             # Per-wrapper: stamp pre-rerank, apply rerank, stamp post-rerank
@@ -506,10 +579,21 @@ class Wrapper(BaseNode):
             if self.rerank:
                 self._stamp_post_rerank(data)
         else:
-            # Standard path: fetch -> dedup (with overfetch/refill) -> rerank -> stamp -> cache
+            # Standard path. Session-scoped seen-set: reset on a fresh scroll (empty
+            # cursor) so re-requesting page 1 returns page 1, and carry it across
+            # rebuilds so a shown id never repeats later in the same scroll.
+            seen: Optional[set] = None
+            if self.dedup:
+                if not child_cursor:
+                    await self._reset_seen_set(ctx, session_id)
+                    seen = set()
+                else:
+                    seen = await self._load_seen_set(ctx, session_id)
             data, child_cursor_out, child_has_next = await self._fetch_and_dedup(
-                ctx, session_size, child_cursor
+                ctx, session_size, child_cursor, seen=seen
             )
+            if self.dedup:
+                await self._save_seen_set(ctx, session_id, seen)
             self._stamp_pre_rerank(data)
             data = await self._apply_rerank(data, methods_dict, session_id)
             if self.rerank:
@@ -517,7 +601,7 @@ class Wrapper(BaseNode):
 
         gen = secrets.token_hex(4)
         await self._write_cache(ctx, session_id, data, gen, child_cursor_out, child_has_next)
-        return self._paginate(data, limit, 1, gen, child_has_next=child_has_next)
+        return self._paginate(data, limit, 0, gen, child_has_next=child_has_next)
 
     async def _build_shared_base(
         self,
@@ -531,10 +615,10 @@ class Wrapper(BaseNode):
         from smartfeed.execution.redis_lock import RedisLock
 
         session_size = self.cache.session_size
-        lock_key = f"{self._base_shared_key(session_id)}:lock"
+        lock_key = f"{self._base_shared_key(session_id, child_cursor)}:lock"
 
-        # Fast path: base already cached
-        existing = await self._read_shared_base(ctx, session_id)
+        # Fast path: this segment already cached
+        existing = await self._read_shared_base(ctx, session_id, child_cursor)
         if existing is not None:
             return existing
 
@@ -542,24 +626,26 @@ class Wrapper(BaseNode):
         async with RedisLock(ctx.redis, lock_key, ttl=30) as acquired:
             if acquired:
                 # Double-check after acquiring lock
-                existing = await self._read_shared_base(ctx, session_id)
+                existing = await self._read_shared_base(ctx, session_id, child_cursor)
                 if existing is not None:
                     return existing
 
                 base_data, child_cursor_out, child_has_next = await self._fetch_and_dedup(
                     ctx, session_size, child_cursor
                 )
-                await self._write_shared_base(ctx, session_id, base_data, child_cursor_out, child_has_next)
+                await self._write_shared_base(
+                    ctx, session_id, child_cursor, base_data, child_cursor_out, child_has_next
+                )
                 return base_data
             else:
-                # Another coroutine holds the lock -- poll until base cache appears
+                # Another coroutine holds the lock -- poll until the segment appears
                 for _ in range(50):
                     await asyncio.sleep(0.1)
-                    existing = await self._read_shared_base(ctx, session_id)
+                    existing = await self._read_shared_base(ctx, session_id, child_cursor)
                     if existing is not None:
                         return existing
                 # Fallback: fetch ourselves if lock holder never wrote
-                existing = await self._read_shared_base(ctx, session_id)
+                existing = await self._read_shared_base(ctx, session_id, child_cursor)
                 if existing is not None:
                     return existing
                 data, _, _ = await self._fetch_and_dedup(ctx, session_size, child_cursor)

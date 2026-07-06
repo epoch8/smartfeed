@@ -33,7 +33,7 @@ def ctx(redis):
 @pytest.mark.asyncio
 async def test_wrapper_dedup_priority_override(ctx):
     """Inner wrapper with dedup_priority=3 overrides child subfeed priorities."""
-    config = FeedConfig.parse_obj({
+    config = FeedConfig.model_validate({
         "version": "2",
         "feed": {
             "type": "wrapper", "node_id": "outer",

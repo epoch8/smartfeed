@@ -19,7 +19,7 @@ def ctx(redis):
 
 @pytest.mark.asyncio
 async def test_cached_wrapper_hides_child_cursors(ctx):
-    config = FeedConfig.parse_obj({
+    config = FeedConfig.model_validate({
         "version": "2",
         "feed": {
             "type": "wrapper", "node_id": "cached",
@@ -39,7 +39,7 @@ async def test_cached_wrapper_hides_child_cursors(ctx):
 
 @pytest.mark.asyncio
 async def test_uncached_wrapper_exposes_child_cursors(ctx):
-    config = FeedConfig.parse_obj({
+    config = FeedConfig.model_validate({
         "version": "2",
         "feed": {
             "type": "wrapper", "node_id": "passthrough",

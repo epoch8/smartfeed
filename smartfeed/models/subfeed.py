@@ -36,7 +36,11 @@ class SubFeed(BaseNode):
         except Exception:
             if self.raise_error:
                 raise
-            return FeedResult(data=[], next_page=cursor, has_next_page=False)
+            # Scope the failure cursor to THIS subfeed (its own, unadvanced position)
+            # so it retries next page without clobbering sibling cursors on merge.
+            return FeedResult(
+                data=[], next_page={self.subfeed_id: subfeed_cursor}, has_next_page=False
+            )
 
         if self.shuffle:
             shuffle(result.data)

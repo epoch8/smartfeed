@@ -99,23 +99,30 @@ FeedItem(id, _smartfeed_debug_info: SmartFeedDebugInfo)
 ## Redis State
 
 ```
-sf:{session_id}:{node_id}:{config_hash}        -- cached session data (JSON list)
-sf:{session_id}:{node_id}:{config_hash}:meta    -- metadata (gen, child_cursor, child_has_next)
-sf:{session_id}:{node_id}:{config_hash}:seen    -- dedup seen-set (Redis SET)
-sf:{session_id}:{cache_key}:{hash}              -- shared base cache (for A/B testing)
-sf:{session_id}:{node_id}:{hash}:lock           -- distributed lock (SETNX)
+sf:{session_id}:{node_id}:{config_hash}          -- cached session data (JSON list)
+sf:{session_id}:{node_id}:{config_hash}:meta      -- metadata (gen, child_cursor, child_has_next)
+sf:{session_id}:{node_id}:{config_hash}:coldlock  -- cold-build lock (SETNX, ttl 30s)
+sf:{session_id}:{node_id}:{config_hash}:seen      -- session-scoped dedup seen-set (Redis SET)
+sf:{session_id}:{cache_key}:{child_hash}:{segment}       -- shared base segment (per continuation window)
+sf:{session_id}:{cache_key}:{child_hash}:{segment}:lock  -- shared segment cold-build lock (SETNX)
 ```
 
 TTL = inactivity timeout. Refreshed on every access via pipeline EXPIRE.
+Cursor for a cached wrapper is `{node_id: {offset, gen}}` (absolute offset).
 
 ## Dedup
 
-Two dedup paths, unified `_dedup(data, seen=None)` method:
+Two dedup paths, unified `_dedup(data, seen=None)` method. Both fetch exactly the
+outstanding deficit and refill until the target is filled or the child is exhausted
+(no over-fetch, so no item loss; no early give-up, so no short pages), and both carry
+a session-scoped Redis seen-set so dedup holds across the whole scroll:
 
-1. **Cached path** (`_fetch_and_dedup`): overfetch + refill loop. Re-dedup combined batches.
-2. **Passthrough path** (`_passthrough`): Redis seen-set for cross-page dedup. SADD new keys after each page.
+1. **Cached path** (`_fetch_and_dedup` / `_cold_build`): seen-set carried across cold
+   rebuilds, reset on a fresh scroll (empty cursor).
+2. **Passthrough path** (`_passthrough`): seen-set persisted across pages; SADD after each page.
 
-Priority arbitration: higher `dedup_priority` wins. Equal = first-seen.
+Priority arbitration: higher `dedup_priority` wins even when the higher-priority copy is
+not first-seen; equal priority = first-seen.
 
 ## Config Hash
 

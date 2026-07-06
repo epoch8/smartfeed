@@ -59,10 +59,10 @@ async def test_stale_gen_resets_to_page1(ctx, redis):
     r1 = await run_executor.run(node, ctx, limit=10, cursor={})
     # Flush to simulate TTL expiry
     await redis.flushall()
-    stale_cursor = {"cached": {"page": 5, "gen": "stale_nonce"}}
+    stale_cursor = {"cached": {"offset": 40, "gen": "stale_nonce"}}
     r2 = await run_executor.run(node, ctx, limit=10, cursor=stale_cursor)
-    # Should reset: page 2 in next cursor (just served page 1)
-    assert r2.next_page["cached"]["page"] == 2
+    # Should reset: served page 1 (offset 0), next cursor points at offset 10
+    assert r2.next_page["cached"]["offset"] == 10
     assert r2.next_page["cached"]["gen"] != "stale_nonce"
 
 
