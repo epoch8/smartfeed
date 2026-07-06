@@ -69,9 +69,7 @@ class Wrapper(BaseNode):
         if self.cache is None or ctx is None or ctx.redis is None:
             return await self._passthrough(methods_dict, session_id, limit, cursor, ctx)
 
-        return await self._execute_with_cache(
-            methods_dict, session_id, limit, cursor, ctx
-        )
+        return await self._execute_with_cache(methods_dict, session_id, limit, cursor, ctx)
 
     # -- dedup -----------------------------------------------------------------
 
@@ -82,9 +80,7 @@ class Wrapper(BaseNode):
         return result
 
     @staticmethod
-    def _collect_priorities(
-        node: BaseNode, override_priority: int, out: Dict[str, int]
-    ) -> None:
+    def _collect_priorities(node: BaseNode, override_priority: int, out: Dict[str, int]) -> None:
         """Recursive walk: propagate override_priority down, write SubFeed priorities to out."""
         from .subfeed import SubFeed
 
@@ -97,8 +93,7 @@ class Wrapper(BaseNode):
             return
 
         # Walk children: look in known child-bearing attributes
-        for attr in ("items", "data", "positional", "default",
-                      "item_from", "item_to"):
+        for attr in ("items", "data", "positional", "default", "item_from", "item_to"):
             child = getattr(node, attr, None)
             if child is None:
                 continue
@@ -172,9 +167,7 @@ class Wrapper(BaseNode):
 
     # -- rerank ----------------------------------------------------------------
 
-    async def _apply_rerank(
-        self, data: list, methods_dict: dict, session_id: str
-    ) -> list:
+    async def _apply_rerank(self, data: list, methods_dict: dict, session_id: str) -> list:
         """Call rerank callable from methods_dict. Validates output length."""
         if not self.rerank:
             return data
@@ -189,8 +182,7 @@ class Wrapper(BaseNode):
             return data
         if len(result) != original_len:
             raise ValueError(
-                f"Rerank '{self.rerank.method_name}' must return exactly "
-                f"{original_len} items, got {len(result)}"
+                f"Rerank '{self.rerank.method_name}' must return exactly " f"{original_len} items, got {len(result)}"
             )
         return result
 
@@ -287,6 +279,7 @@ class Wrapper(BaseNode):
             return
         key = self._seen_set_key(session_id)
         await ctx.redis.sadd(key, *new_keys)
+        assert self.dedup is not None, "seen-set only written when dedup configured"
         ttl = self.dedup.state_ttl
         await ctx.redis.expire(key, ttl)
 
@@ -329,6 +322,7 @@ class Wrapper(BaseNode):
         child_has_next: bool = False,
     ) -> None:
         """Write session data and metadata to Redis with TTL."""
+        assert self.cache is not None, "cached path; execute() routes cache=None to passthrough"
         base = self._base_key(session_id)
         ttl = self.cache.session_ttl
 
@@ -355,7 +349,11 @@ class Wrapper(BaseNode):
     # -- pagination ------------------------------------------------------------
 
     def _paginate(
-        self, data: List, limit: int, offset: int, gen: str,
+        self,
+        data: List,
+        limit: int,
+        offset: int,
+        gen: str,
         child_has_next: bool = False,
     ) -> FeedResult:
         """Slice cached data at an absolute offset and build the next cursor.
@@ -406,7 +404,10 @@ class Wrapper(BaseNode):
                         await self._touch_ttl(ctx, session_id)
                         child_has_next = meta.get("child_has_next", bool(meta.get("child_cursor")))
                         return self._paginate(
-                            cached_data, limit, cursor_offset, cursor_gen,
+                            cached_data,
+                            limit,
+                            cursor_offset,
+                            cursor_gen,
                             child_has_next=child_has_next,
                         )
                     # Cache exhausted: rebuild with continuation cursor
@@ -419,9 +420,7 @@ class Wrapper(BaseNode):
                     )
 
         # Cold path: no gen or stale gen -> fresh build
-        return await self._cold_build_locked(
-            methods_dict, session_id, limit, ctx, child_cursor={}
-        )
+        return await self._cold_build_locked(methods_dict, session_id, limit, ctx, child_cursor={})
 
     async def _cold_build_locked(
         self,
@@ -439,9 +438,7 @@ class Wrapper(BaseNode):
         lock_key = f"{self._base_key(session_id)}:coldlock"
         async with RedisLock(ctx.redis, lock_key, ttl=30) as acquired:
             if acquired:
-                return await self._cold_build(
-                    methods_dict, session_id, limit, ctx, child_cursor
-                )
+                return await self._cold_build(methods_dict, session_id, limit, ctx, child_cursor)
             # Another coroutine is building -- wait for its cache, then serve page 1.
             for _ in range(50):
                 await asyncio.sleep(0.1)
@@ -449,17 +446,16 @@ class Wrapper(BaseNode):
                 if meta:
                     cached = await self._read_cache(ctx, session_id)
                     if cached is not None:
-                        child_has_next = meta.get(
-                            "child_has_next", bool(meta.get("child_cursor"))
-                        )
+                        child_has_next = meta.get("child_has_next", bool(meta.get("child_cursor")))
                         return self._paginate(
-                            cached, limit, 0, meta.get("gen", ""),
+                            cached,
+                            limit,
+                            0,
+                            meta.get("gen", ""),
                             child_has_next=child_has_next,
                         )
             # Fallback: builder never wrote -> build ourselves.
-            return await self._cold_build(
-                methods_dict, session_id, limit, ctx, child_cursor
-            )
+            return await self._cold_build(methods_dict, session_id, limit, ctx, child_cursor)
 
     # -- shared base cache helpers ----------------------------------------------
 
@@ -487,10 +483,16 @@ class Wrapper(BaseNode):
         return orjson.loads(raw)
 
     async def _write_shared_base(
-        self, ctx: Any, session_id: str, child_cursor: Dict, data: List,
-        child_cursor_out: Dict, child_has_next: bool = False,
+        self,
+        ctx: Any,
+        session_id: str,
+        child_cursor: Dict,
+        data: List,
+        child_cursor_out: Dict,
+        child_has_next: bool = False,
     ) -> None:
         """Write a shared-base segment and its meta to Redis with TTL."""
+        assert self.cache is not None, "cached path; execute() routes cache=None to passthrough"
         key = self._base_shared_key(session_id, child_cursor)
         ttl = self.cache.session_ttl
         pipe = ctx.redis.pipeline()
@@ -560,15 +562,14 @@ class Wrapper(BaseNode):
         child_cursor: Dict,
     ) -> FeedResult:
         """Build full session: fetch -> dedup -> rerank -> write cache -> paginate page 1."""
+        assert self.cache is not None, "cached path; execute() routes cache=None to passthrough"
         session_size = self.cache.session_size
 
         if self.cache_key is not None:
             # Shared cache path: base data (fetch + dedup) is shared across wrappers
             # with the same cache_key; rerank is applied per-wrapper after. Each
             # continuation position is a distinct shared segment (see _base_shared_key).
-            base_data = await self._build_shared_base(
-                methods_dict, session_id, ctx, child_cursor
-            )
+            base_data = await self._build_shared_base(methods_dict, session_id, ctx, child_cursor)
             shared_meta = await self._read_shared_base_meta(ctx, session_id, child_cursor)
             child_cursor_out = shared_meta.get("child_cursor", {}) if shared_meta else {}
             child_has_next = shared_meta.get("child_has_next", False) if shared_meta else False
@@ -593,6 +594,7 @@ class Wrapper(BaseNode):
                 ctx, session_size, child_cursor, seen=seen
             )
             if self.dedup:
+                assert seen is not None
                 await self._save_seen_set(ctx, session_id, seen)
             self._stamp_pre_rerank(data)
             data = await self._apply_rerank(data, methods_dict, session_id)
@@ -614,6 +616,7 @@ class Wrapper(BaseNode):
         only one caller fetches from child on a cold build.  Others wait and read."""
         from smartfeed.execution.redis_lock import RedisLock
 
+        assert self.cache is not None, "cached path; execute() routes cache=None to passthrough"
         session_size = self.cache.session_size
         lock_key = f"{self._base_shared_key(session_id, child_cursor)}:lock"
 

@@ -23,12 +23,10 @@ class RedisLock:
         self._owned = False
 
     async def __aenter__(self) -> bool:
-        self._owned = bool(
-            await self._redis.set(self._key, self._token, nx=True, ex=self._ttl)
-        )
+        self._owned = bool(await self._redis.set(self._key, self._token, nx=True, ex=self._ttl))
         return self._owned
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc: object) -> None:
         if not self._owned:
             return
         val = await self._redis.get(self._key)

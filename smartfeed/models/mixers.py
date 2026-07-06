@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, model_validator
 
@@ -20,6 +20,7 @@ def _merge_cursor(child_cursors: Dict[str, dict]) -> dict:
 # MergerPercentageItem
 # ---------------------------------------------------------------------------
 
+
 class MergerPercentageItem(BaseModel):
     percentage: int
     data: Any  # BaseNode subclass
@@ -35,6 +36,7 @@ class MergerPercentageItem(BaseModel):
 # ---------------------------------------------------------------------------
 # MergerPercentage
 # ---------------------------------------------------------------------------
+
 
 class MergerPercentage(BaseNode):
     type: Literal["merger_percentage"] = "merger_percentage"
@@ -81,7 +83,7 @@ class MergerPercentage(BaseNode):
         def assemble(
             buffers: Dict[str, list],
             child_cursors: Dict[str, dict],
-        ):
+        ) -> Tuple[List[Any], dict]:
             # Simple concatenation: demand already ensures correct proportions
             merged_data: List[Any] = []
             for child in children:
@@ -95,6 +97,7 @@ class MergerPercentage(BaseNode):
 # MergerAppend
 # ---------------------------------------------------------------------------
 
+
 class MergerAppend(BaseNode):
     type: Literal["merger_append"] = "merger_append"
     node_id: str
@@ -107,10 +110,7 @@ class MergerAppend(BaseNode):
         if isinstance(values, dict):
             raw_items = values.get("items")
             if isinstance(raw_items, list):
-                values["items"] = [
-                    coerce_feed_node(item) if isinstance(item, dict) else item
-                    for item in raw_items
-                ]
+                values["items"] = [coerce_feed_node(item) if isinstance(item, dict) else item for item in raw_items]
         return values
 
     def build_mix_plan(
@@ -123,8 +123,10 @@ class MergerAppend(BaseNode):
         # Each child gets equal demand share; leftover goes to first children
         n = len(self.items)
         if n == 0:
-            def assemble_empty(buffers, child_cursors):
+
+            def assemble_empty(buffers: Dict[str, list], child_cursors: Dict[str, dict]) -> Tuple[List[Any], dict]:
                 return [], _merge_cursor(child_cursors)
+
             return MixPlan(children=[], assemble=assemble_empty)
 
         base_demand = limit // n
@@ -142,7 +144,7 @@ class MergerAppend(BaseNode):
         def assemble(
             buffers: Dict[str, list],
             child_cursors: Dict[str, dict],
-        ):
+        ) -> Tuple[List[Any], dict]:
             merged_data: List[Any] = []
             for child in children:
                 merged_data.extend(buffers.get(child.node_id, []))
@@ -156,12 +158,13 @@ class MergerAppend(BaseNode):
 # MergerPositional
 # ---------------------------------------------------------------------------
 
+
 class MergerPositional(BaseNode):
     type: Literal["merger_positional"] = "merger_positional"
     node_id: str
     positions: List[int] = []
     positional: Any  # BaseNode subclass
-    default: Any     # BaseNode subclass
+    default: Any  # BaseNode subclass
     dedup_priority: int = 0
 
     @model_validator(mode="before")
@@ -201,7 +204,7 @@ class MergerPositional(BaseNode):
         def assemble(
             buffers: Dict[str, list],
             child_cursors: Dict[str, dict],
-        ):
+        ) -> Tuple[List[Any], dict]:
             pos_items = deque(buffers.get(positional_child.node_id, []))
             def_items = deque(buffers.get(default_child.node_id, []))
 
@@ -223,6 +226,7 @@ class MergerPositional(BaseNode):
 # ---------------------------------------------------------------------------
 # MergerPercentageGradient
 # ---------------------------------------------------------------------------
+
 
 class MergerPercentageGradient(BaseNode):
     """Percentage-based merger that shifts the ratio over pages."""
@@ -253,11 +257,7 @@ class MergerPercentageGradient(BaseNode):
                     percentage_to = 100
 
             if i > start_position:
-                iter_limit = (
-                    (limit * page - start_position)
-                    if i > limit * page
-                    else (i - start_position)
-                )
+                iter_limit = (limit * page - start_position) if i > limit * page else (i - start_position)
                 start_position = i
                 from_take = iter_limit * percentage_from // 100
                 to_take = iter_limit - from_take
@@ -295,7 +295,7 @@ class MergerPercentageGradient(BaseNode):
         def assemble(
             buffers: Dict[str, list],
             child_cursors: Dict[str, dict],
-        ):
+        ) -> Tuple[List[Any], dict]:
             from_data = list(buffers.get(from_child.node_id, []))
             to_data = list(buffers.get(to_child.node_id, []))
             result: List[Any] = []
@@ -303,8 +303,8 @@ class MergerPercentageGradient(BaseNode):
             for seg in segments:
                 ft = int(seg["from_take"])
                 tt = int(seg["to_take"])
-                result.extend(from_data[fi: fi + ft])
-                result.extend(to_data[ti: ti + tt])
+                result.extend(from_data[fi : fi + ft])
+                result.extend(to_data[ti : ti + tt])
                 fi += ft
                 ti += tt
             merged_cur = _merge_cursor(child_cursors)
@@ -317,6 +317,7 @@ class MergerPercentageGradient(BaseNode):
 # ---------------------------------------------------------------------------
 # MergerAppendDistribute
 # ---------------------------------------------------------------------------
+
 
 class MergerAppendDistribute(BaseNode):
     """Append merger that round-robins items by a distribution key."""
@@ -335,10 +336,7 @@ class MergerAppendDistribute(BaseNode):
         if isinstance(values, dict):
             raw_items = values.get("items")
             if isinstance(raw_items, list):
-                values["items"] = [
-                    coerce_feed_node(item) if isinstance(item, dict) else item
-                    for item in raw_items
-                ]
+                values["items"] = [coerce_feed_node(item) if isinstance(item, dict) else item for item in raw_items]
         return values
 
     def _uniform_distribute(self, data: list) -> list:
@@ -382,7 +380,7 @@ class MergerAppendDistribute(BaseNode):
         def assemble(
             buffers: Dict[str, list],
             child_cursors: Dict[str, dict],
-        ):
+        ) -> Tuple[List[Any], dict]:
             all_items: List[Any] = []
             for child in children:
                 all_items.extend(buffers.get(child.node_id, []))

@@ -42,7 +42,7 @@ from pydantic import BaseModel
 
 class FeedConfig(BaseModel):
     version: str
-    feed: FeedNode  # type: ignore[valid-type]
+    feed: FeedNode
 
 
 # Rebuild forward refs so that nested FeedNode fields resolve correctly
@@ -66,7 +66,6 @@ __all__ = [
     "FeedResult",
     "SmartFeedDebugInfo",
     "FeedItem",
-
     "SubFeed",
     "MergerPercentage",
     "MergerPercentageItem",

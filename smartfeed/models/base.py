@@ -2,29 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from smartfeed.execution.plans import MixPlan
 
 
 class SmartFeedDebugInfo(BaseModel):
     """Metadata stamped by SmartFeed on every item."""
 
     # Always present (stamped by SubFeed)
-    source: str                                  # subfeed_id (regular_tours, recommended_tours, promo_tours)
+    source: str  # subfeed_id (regular_tours, recommended_tours, promo_tours)
 
     # Stamped by FeedManager (top-level position in final feed)
-    smartfeed_position: Optional[int] = None     # 0-based position in page
+    smartfeed_position: Optional[int] = None  # 0-based position in page
 
     # Stamped by subfeed methods (optional, source-specific)
-    strategy: Optional[str] = None               # ML model strategy (model_hot_users, model_cold_users)
+    strategy: Optional[str] = None  # ML model strategy (model_hot_users, model_cold_users)
 
     # Stamped by rerank callable (optional, present only when rerank is configured)
-    rerank_position: Optional[int] = None        # position after rerank (1-based)
-    rrf_score: Optional[float] = None            # RRF score
-    feature_score: Optional[float] = None        # feature score from ES coefficients
-    feature_position: Optional[int] = None       # rank by feature score (1-based)
-    total_reranked: Optional[int] = None         # total items in rerank batch
+    rerank_position: Optional[int] = None  # position after rerank (1-based)
+    rrf_score: Optional[float] = None  # RRF score
+    feature_score: Optional[float] = None  # feature score from ES coefficients
+    feature_position: Optional[int] = None  # rank by feature score (1-based)
+    total_reranked: Optional[int] = None  # total items in rerank batch
     raw_params: Optional[Dict[str, Any]] = None  # raw tour params from Redis
 
     model_config = ConfigDict(extra="allow")
@@ -34,9 +37,7 @@ class FeedItem(BaseModel):
     """One item in the feed output. Wraps tour data + SmartFeed metadata."""
 
     id: Any
-    smartfeed_debug_info: Optional[SmartFeedDebugInfo] = Field(
-        default=None, alias="_smartfeed_debug_info"
-    )
+    smartfeed_debug_info: Optional[SmartFeedDebugInfo] = Field(default=None, alias="_smartfeed_debug_info")
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -48,6 +49,10 @@ class BaseNode(BaseModel):
         # Use json.dumps with sort_keys for deterministic hashing
         raw = json.dumps(self.model_dump(), sort_keys=True, default=str)
         return hashlib.md5(raw.encode()).hexdigest()[:8]
+
+    def build_mix_plan(self, *, ctx: Any, limit: int, cursor: dict) -> "MixPlan":
+        """Mixer nodes override this; leaf nodes (SubFeed, Wrapper) use execute() instead."""
+        raise NotImplementedError(f"{type(self).__name__} is not a mixer node")
 
 
 class FeedResult(BaseModel):
@@ -67,4 +72,5 @@ def coerce_feed_node(value: Any) -> Any:
     # Lazy import to break circular dependency
     from smartfeed.models import FeedNode  # noqa: PLC0415
     from pydantic import TypeAdapter
+
     return TypeAdapter(FeedNode).validate_python(value)
