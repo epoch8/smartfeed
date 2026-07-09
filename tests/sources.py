@@ -22,7 +22,7 @@ Cursor convention for ScriptedSource: ``{"pos": <int offset into pool>}``.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from smartfeed.models.base import FeedResult
 from smartfeed.models.subfeed import SubFeed
@@ -34,6 +34,7 @@ from smartfeed.execution import executor as run_executor
 # ---------------------------------------------------------------------------
 # Source
 # ---------------------------------------------------------------------------
+
 
 class ScriptedSource:
     """Stateful, offset-paginated source over a finite pool of item dicts."""
@@ -54,7 +55,7 @@ class ScriptedSource:
         pos = (next_page or {}).get("pos", 0)
         if self.latency:
             await asyncio.sleep(self.latency)
-        chunk = self.pool[pos: pos + limit]
+        chunk = self.pool[pos : pos + limit]
         # Fresh copies so downstream in-place stamping never mutates the pool.
         data = [dict(it) for it in chunk]
         for it in data:
@@ -70,6 +71,7 @@ class ScriptedSource:
 # ---------------------------------------------------------------------------
 # Pool factories (all deterministic -- no RNG, so failures are reproducible)
 # ---------------------------------------------------------------------------
+
 
 def unique_pool(n: int, start: int = 0, val_prefix: str = "u") -> List[Dict]:
     """Ids start..start+n-1, no duplicates. Isolates *item loss* from dedup."""
@@ -106,6 +108,7 @@ def adjacent_dup_pool(n_unique: int) -> List[Dict]:
 # Context / node builders
 # ---------------------------------------------------------------------------
 
+
 def make_ctx(methods: Dict, redis=None, session_id: str = "s1") -> ExecutionContext:
     return ExecutionContext(session_id=session_id, methods_dict=methods, redis=redis)
 
@@ -121,9 +124,7 @@ def wrapper(
     session_size: Optional[int] = None,
     session_ttl: int = 300,
     dedup_key: Optional[str] = None,
-    overfetch_factor: int = 4,
-    max_refill_loops: int = 2,
-    missing_key_policy: str = "error",
+    missing_key_policy: Literal["error", "keep", "drop"] = "error",
     rerank_method: Optional[str] = None,
     rerank_raise: bool = True,
     cache_key: Optional[str] = None,
@@ -136,8 +137,6 @@ def wrapper(
     if dedup_key is not None:
         dedup = WrapperDedup(
             dedup_key=dedup_key,
-            overfetch_factor=overfetch_factor,
-            max_refill_loops=max_refill_loops,
             missing_key_policy=missing_key_policy,
         )
     rerank = None
@@ -157,6 +156,7 @@ def wrapper(
 # Drain + invariant assertions
 # ---------------------------------------------------------------------------
 
+
 async def drain(node, ctx, limit: int, max_pages: int = 500, cursor=None) -> List[List]:
     """Page until ``has_next_page`` is False. Returns the list of page-data lists.
 
@@ -173,8 +173,7 @@ async def drain(node, ctx, limit: int, max_pages: int = 500, cursor=None) -> Lis
             return pages
         cursor = r.next_page
     raise AssertionError(
-        f"pagination did not terminate within {max_pages} pages "
-        f"(infinite loop / non-advancing cursor)"
+        f"pagination did not terminate within {max_pages} pages " f"(infinite loop / non-advancing cursor)"
     )
 
 

@@ -1,4 +1,4 @@
-"""BUG #5 -- cold-build thundering herd on the standard (non-shared) cached path.
+"""Regression: cold-build thundering herd on the standard (non-shared) cached path.
 
 Only the cache_key path takes a RedisLock. For a normal cached wrapper, N
 concurrent first requests for one session each fetch the full session_size from
@@ -29,9 +29,7 @@ async def test_concurrent_cold_build_fetches_child_once():
     node = S.wrapper(S.subfeed("src", "src"), session_size=50)
     ctx = S.make_ctx({"src": src}, redis=fakeredis.aioredis.FakeRedis())
 
-    results = await asyncio.gather(*[
-        run_executor.run(node, ctx, limit=10, cursor={}) for _ in range(N)
-    ])
+    results = await asyncio.gather(*[run_executor.run(node, ctx, limit=10, cursor={}) for _ in range(N)])
 
     assert all(len(r.data) == 10 for r in results)
     # One winner should fetch the child; the rest should read the cache it wrote.
@@ -44,9 +42,7 @@ async def test_concurrent_cold_build_single_generation():
     node = S.wrapper(S.subfeed("src", "src"), session_size=50)
     ctx = S.make_ctx({"src": src}, redis=fakeredis.aioredis.FakeRedis())
 
-    results = await asyncio.gather(*[
-        run_executor.run(node, ctx, limit=10, cursor={}) for _ in range(N)
-    ])
+    results = await asyncio.gather(*[run_executor.run(node, ctx, limit=10, cursor={}) for _ in range(N)])
     gens = {r.next_page["w"]["gen"] for r in results}
     assert len(gens) == 1, f"concurrent callers got {len(gens)} different generations: {gens}"
 
@@ -55,10 +51,7 @@ async def test_concurrent_cold_build_single_generation():
 async def test_shared_cache_path_already_locks_control():
     """Control: the cache_key path DOES take a lock, so it fetches once."""
     src = S.ScriptedSource(S.unique_pool(200), latency=0.05)
-    node = S.wrapper(S.subfeed("src", "src"), node_id="w",
-                     session_size=50, cache_key="shared")
+    node = S.wrapper(S.subfeed("src", "src"), node_id="w", session_size=50, cache_key="shared")
     ctx = S.make_ctx({"src": src}, redis=fakeredis.aioredis.FakeRedis())
-    await asyncio.gather(*[
-        run_executor.run(node, ctx, limit=10, cursor={}) for _ in range(N)
-    ])
+    await asyncio.gather(*[run_executor.run(node, ctx, limit=10, cursor={}) for _ in range(N)])
     assert src.calls == 1, f"shared path should fetch once, got {src.calls}"

@@ -95,9 +95,8 @@ async def test_step_parameter_controls_shift(ctx):
     # Compute ratio difference between page 1 and page 2 for each node
     def _b_count(node, cursor):
         import asyncio
-        r = asyncio.get_event_loop().run_until_complete(
-            run_executor.run(node, ctx, limit=10, cursor=cursor)
-        )
+
+        r = asyncio.get_event_loop().run_until_complete(run_executor.run(node, ctx, limit=10, cursor=cursor))
         sources = [item["_smartfeed_debug_info"]["source"] for item in r.data]
         return sources.count("source_b"), r.next_page
 
@@ -147,9 +146,11 @@ async def test_gradient_eventually_reaches_100_pct_to(ctx):
     node = _make_gradient(pct_from=80, pct_to=20, step=50, size_to_step=10)
 
     cursor = {}
+    r = None
     for _ in range(5):
         r = await run_executor.run(node, ctx, limit=10, cursor=cursor)
         cursor = r.next_page
+    assert r is not None
 
     sources = [item["_smartfeed_debug_info"]["source"] for item in r.data]
     # At full shift, all items come from source_b

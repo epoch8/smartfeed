@@ -56,7 +56,7 @@ async def test_generation_id_in_cursor(ctx):
 @pytest.mark.asyncio
 async def test_stale_gen_resets_to_page1(ctx, redis):
     node = _make_wrapper()
-    r1 = await run_executor.run(node, ctx, limit=10, cursor={})
+    await run_executor.run(node, ctx, limit=10, cursor={})
     # Flush to simulate TTL expiry
     await redis.flushall()
     stale_cursor = {"cached": {"offset": 40, "gen": "stale_nonce"}}

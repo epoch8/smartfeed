@@ -1,4 +1,4 @@
-"""BUG #4 -- RedisLock assumes bytes; crashes under decode_responses=True.
+"""Regression: RedisLock assumes bytes; crashes under decode_responses=True.
 
 redis_lock.py:35 does ``val.decode()`` in __aexit__. With a Redis client
 configured ``decode_responses=True`` (a very common setup), the reply is already
@@ -10,7 +10,7 @@ Also included: a green characterization test showing the token check itself is
 correct (a lock whose value was overwritten by another owner is NOT deleted on
 release). The residual issue there is the non-atomic get-then-delete (TOCTOU),
 which cannot be reproduced deterministically without concurrency injection and is
-documented in the review rather than asserted here.
+documented separately rather than asserted here.
 """
 
 import pytest
@@ -34,8 +34,7 @@ async def test_lock_release_with_decode_responses():
 async def test_shared_cold_build_with_decode_responses():
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     src = S.ScriptedSource(S.unique_pool(100))
-    node = S.wrapper(S.subfeed("src", "src"), node_id="w",
-                     session_size=20, cache_key="shared")
+    node = S.wrapper(S.subfeed("src", "src"), node_id="w", session_size=20, cache_key="shared")
     ctx = S.make_ctx({"src": src}, redis=redis)
     r = await run_executor.run(node, ctx, limit=10, cursor={})
     assert len(r.data) == 10

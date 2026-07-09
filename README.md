@@ -27,14 +27,17 @@ pip install epoch8-smartfeed
 
 Requires: Python 3.9+, **pydantic v2**, orjson. An async Redis client (`redis.asyncio.Redis`) is required only if any Wrapper uses `cache` or cross-page `dedup`; without it those features silently fall back to uncached behavior.
 
+Note the distribution name: an unrelated 2015 project owns the PyPI name `smartfeed` and installs the **same** top-level `smartfeed` package — install `epoch8-smartfeed`, and do not co-install the other one.
+
 ## Quick start
 
 ```python
+from redis.asyncio import Redis
+
 from smartfeed.manager import FeedManager
 from smartfeed.models.base import FeedResult
 
 config = {
-    "version": "2",
     "feed": {
         "type": "wrapper",
         "node_id": "main",
@@ -66,10 +69,12 @@ async def source_b(user_id, limit, next_page, **kwargs):
 async def my_rerank(items, session_id):
     return sorted(items, key=lambda x: x.get("score", 0), reverse=True)
 
+redis = Redis()  # or None: cache/dedup then degrade to per-page passthrough
+
 manager = FeedManager(
     config=config,
     methods_dict={"source_a": source_a, "source_b": source_b, "my_rerank": my_rerank},
-    redis_client=redis,  # async redis.asyncio.Redis; needed for cache/dedup persistence
+    redis_client=redis,  # needed for cache/dedup persistence
 )
 
 result = await manager.get_feed(session_id="user_123", limit=20, cursor=None)
@@ -78,7 +83,7 @@ result = await manager.get_feed(session_id="user_123", limit=20, cursor=None)
 # result.has_next_page  -> bool
 ```
 
-Config is validated when `FeedManager` is constructed. A malformed config raises `pydantic.ValidationError` at construction, not on the first `get_feed`.
+Config is validated when `FeedManager` is constructed. A malformed config raises `pydantic.ValidationError` at construction, not on the first `get_feed`. `subfeed_id` and `node_id` share one namespace (cursor keys, Redis keys) and must be unique across the whole tree — duplicates raise at construction.
 
 ## How it works
 
@@ -97,7 +102,7 @@ The executor walks the tree. For each node it either calls `execute()` (SubFeed,
 The entire public surface is one class with two methods.
 
 ```python
-FeedManager(config: dict, methods_dict: dict, redis_client: Optional[Any] = None)
+FeedManager(config: dict, methods_dict: dict, redis_client: Optional[redis.asyncio.Redis] = None)
 ```
 Parses and validates `config` into a `FeedConfig` immediately (pydantic v2). `methods_dict` maps names to your async fetch/rerank callables. `redis_client` must be an async `redis.asyncio.Redis`; if `None`, every Wrapper with `cache`/`dedup` degrades to uncached passthrough. Holds no per-request state.
 
@@ -106,9 +111,11 @@ async get_feed(session_id: str, limit: int, cursor: Optional[dict] = None) -> Fe
 ```
 `cursor=None` is treated as the first page (`{}`). Builds a fresh execution context per call and delegates to the executor, then stamps each dict item's final 0-based page position. Returns `FeedResult(data, next_page, has_next_page)`. `next_page` is opaque; store it and pass it back as `cursor`.
 
+Inputs are validated: a non-positive or non-int `limit` and an empty `session_id` raise `ValueError`; a non-dict `cursor` raises `TypeError`. Cursor **contents** are treated as untrusted (they round-trip through clients): a malformed per-node entry (non-dict slice, negative or non-int `offset`, non-str `gen`, non-positive-int `page`) raises `ValueError` naming the node, regardless of any `raise_error` setting.
+
 There is **no request-parameters channel**: only `session_id`, `limit`, and the cursor are threaded to sources. Per-request context must be baked into `subfeed_params` when you build the config, or captured in closures when you build `methods_dict` for that request.
 
-`FeedResult` (`smartfeed.models.base`): `data: list`, `next_page: dict`, `has_next_page: bool`. `data` is a bare list; the pipeline assumes dict items and silently skips non-dict items in stamping/dedup.
+`FeedResult` (`smartfeed.models.base`): `data: List[Any]`, `next_page: dict`, `has_next_page: bool`. Items are usually dicts; non-dict items are passed through untouched by stamping/dedup (hence the deliberately loose element type).
 
 ## Callable contracts you implement
 
@@ -120,7 +127,7 @@ async def fetch(user_id: str, limit: int, next_page: dict, **kwargs) -> FeedResu
 
 - **`**kwargs` is mandatory.** The executor injects `ctx=` into every call. A function without `**kwargs` raises `TypeError` on every invocation. (And if that source has `raise_error=False`, the `TypeError` is swallowed into an empty result, so a signature bug looks exactly like "this source had no items today".)
 - `user_id` is the feed `session_id` (not necessarily an account id).
-- `limit` is this leaf's computed demand for the page. Under a mixer it is a fraction of the page; under a dedup wrapper it is inflated by `overfetch_factor` or a refill deficit.
+- `limit` is this leaf's computed demand for the page. Under a mixer it is a fraction of the page; under a dedup wrapper it is the outstanding refill deficit.
 - `next_page` is this subfeed's own cursor slice (`cursor.get(subfeed_id, {})`), opaque. Echo back whatever you need on the next page.
 - Return a `FeedResult` (or any object exposing `.data` / `.next_page` / `.has_next_page`; there is no `isinstance` check).
 - On success each dict item is stamped with `_smartfeed_debug_info.source = subfeed_id`. Non-dict items are passed through untouched.
@@ -141,8 +148,9 @@ All defaults below are byte-exact from the code. `FeedConfig` is the top-level s
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `version` | `str` | required | Descriptive tag. Carried but never read by the code. |
 | `feed` | `FeedNode` | required | Root node. Discriminated union on `type` over the 7 node types. |
+
+Unknown top-level keys (e.g. a legacy `version` tag) are ignored.
 
 ### SubFeed — `type: "subfeed"`
 
@@ -151,7 +159,7 @@ All defaults below are byte-exact from the code. `FeedConfig` is the top-level s
 | `subfeed_id` | `str` | required | Logical name. Stamped as `_smartfeed_debug_info.source`, is the cursor namespace key, and the identity dedup priority resolves against. |
 | `method_name` | `str` | required | Key into `methods_dict`. Looked up **before** the try block, so a missing/typo'd name raises `KeyError` even with `raise_error=False`. |
 | `subfeed_params` | `dict` | `{}` | Static kwargs merged into the fetch call. A key colliding with `user_id`/`limit`/`next_page`/`ctx` raises `TypeError` at call time (not validated at parse time). |
-| `raise_error` | `bool` | `True` | `True`: exceptions propagate. `False`: swallow, return an empty page. On the swallow path `next_page` is the full incoming cursor unchanged (not re-nested under `subfeed_id`). |
+| `raise_error` | `bool` | `True` | `True`: exceptions propagate. `False`: swallow, return an empty page. On the swallow path `next_page` is `{subfeed_id: <own cursor slice, unadvanced>}` with `has_next_page=False`, so the source retries the same position next page without clobbering sibling cursors on merge. |
 | `shuffle` | `bool` | `False` | Shuffle this source's page in place before stamping. Per-page only. |
 | `dedup_priority` | `int` | `0` | See [dedup_priority](#dedup-and-dedup_priority). |
 
@@ -182,9 +190,9 @@ Wraps exactly one child with optional stages. `cache`, `dedup`, `rerank` are all
 |---|---|---|---|
 | `dedup_key` | `str` | required | Item field for identity. Compared as `str(item[key])`, so `1` and `"1"` collide. |
 | `missing_key_policy` | `"error" \| "keep" \| "drop"` | `"error"` | When an item lacks `dedup_key`: `error` raises, `keep` passes it through un-deduped, `drop` discards it. |
-| `overfetch_factor` | `int` | `4` | **Deprecated, no effect.** The dedup fetch now pulls exactly the outstanding deficit and refills until the target is filled or the child is exhausted. Kept for config back-compat. |
-| `max_refill_loops` | `int` | `2` | **Deprecated, no effect.** Refill now continues until the page is full or the source runs out (bounded by an internal safety cap), so pages are not cut short. |
-| `state_ttl` | `int` | `300` | TTL (s) on the Redis seen-set (session-scoped dedup state, both cache and passthrough paths). |
+| `state_ttl` | `int` | `300` | TTL (s) on the Redis seen-set (session-scoped dedup state, both cache and passthrough paths). Refreshed on every warm read, like the cache TTL. |
+
+(The pre-release `overfetch_factor` / `max_refill_loops` knobs are gone: the dedup fetch pulls exactly the outstanding deficit and refills until the page is full or the child is exhausted. Unknown keys in the config are ignored, so configs still carrying them parse.)
 
 `WrapperRerank`:
 
@@ -248,8 +256,8 @@ If a source runs dry the other backfills; if the positional source is exhausted 
 | `node_id` | `str` | required | Also the merged-cursor key holding `{"page": n}`. |
 | `item_from` | `{percentage:int, data:node}` | required | Starting branch. Its share falls toward 0. |
 | `item_to` | `{percentage:int, data:node}` | required | Ending branch. Its share rises toward 100, then clamps. |
-| `step` | `int` | required | Percentage points shifted per segment. |
-| `size_to_step` | `int` | required | Items per shift. Used as a `range()` step; `0` raises at runtime, not at parse time. |
+| `step` | `int` | required | Percentage points shifted per segment. Must be > 0 (validated at parse). |
+| `size_to_step` | `int` | required | Items per shift. Must be > 0 (validated at parse). |
 | `dedup_priority` | `int` | `0` | |
 
 **MergerAppendDistribute** — `type: "merger_distribute"` (note the literal). Round-robin by a key so no two adjacent items share it.
@@ -287,13 +295,13 @@ Every node has `dedup_priority: int = 0`. When a Wrapper's dedup sees the same k
 All SmartFeed state lives in Redis under `sf:{session_id}:...`. `config_hash` is the first 8 hex chars of an md5 over the node's sorted JSON dump, so any config change moves the key and old data ages out.
 
 ```
-sf:{session_id}:{cache_key or node_id}:{config_hash}          cached session batch (JSON)
+sf:{session_id}:{cache_key or node_id}:{config_hash}          cached session batch (Redis LIST of orjson items)
 sf:{session_id}:{cache_key or node_id}:{config_hash}:meta     gen nonce, child cursor, child has_next
-sf:{session_id}:{cache_key or node_id}:{config_hash}:coldlock cold-build lock (ttl 30s)
+sf:{session_id}:{cache_key or node_id}:{config_hash}:coldlock cold-build lock (ttl 10s)
 sf:{session_id}:{node_id}:{config_hash}:seen                  dedup seen-set (session-scoped; cache + passthrough)
 sf:{session_id}:{cache_key}:{child_config_hash}:{segment}     shared base segment (when cache_key set)
 sf:{session_id}:{cache_key}:{child_config_hash}:{segment}:meta   shared base segment meta
-sf:{session_id}:{cache_key}:{child_config_hash}:{segment}:lock   shared segment cold-build lock (ttl 30s)
+sf:{session_id}:{cache_key}:{child_config_hash}:{segment}:lock   shared segment cold-build lock (ttl 10s)
 ```
 
 (`{segment}` is `"0"` for page 1 and a short hash of the continuation cursor for later windows.)
@@ -306,24 +314,25 @@ Note the `next_page` cursor shape is config-dependent: a cached wrapper hides th
 
 Error handling is **opt-in per node**. By default (`raise_error=True` everywhere) one failing source or rerank fails the entire `get_feed` call, including sibling branches that already succeeded — `asyncio.gather` runs without `return_exceptions=True`, and `FeedManager` has no try/except of its own. For fail-soft behavior, set `raise_error=False` on the specific SubFeed/rerank nodes.
 
-Four sharp edges an integrator will hit:
+Five sharp edges an integrator will hit:
 
 1. **Missing `method_name`** is looked up before the try block, so it raises `KeyError` regardless of `raise_error`.
 2. **Rerank length mismatch** always raises `ValueError`, regardless of `rerank.raise_error`.
 3. **A subfeed function without `**kwargs`** raises `TypeError` on every call (the injected `ctx` has nowhere to go). With `raise_error=False` this is swallowed into an empty page — a signature bug that reads as "no items".
 4. **`subfeed_params` key collisions** (with `user_id`/`limit`/`next_page`/`ctx`) raise `TypeError` at call time, with the same silent-swallow caveat under `raise_error=False`.
+5. **Malformed cursor contents** raise `ValueError` regardless of `raise_error` — cursors are validated as untrusted client input (see [Public API](#public-api)). Catch it at your API boundary and treat it as a bad request, not a server error.
 
 Silent behavior downgrades (no exception): `cache` without a `redis_client`; `cache_key` without `cache`; divergent shared-`cache_key` settings. These ship without error and only show up as degraded cache/dedup metrics.
 
 ## `_smartfeed_debug_info`
 
-Every dict item carries a `_smartfeed_debug_info` bundle. The core writes these (all positions are **0-based** at runtime — the model comments saying "1-based" are stale):
+Every dict item carries a `_smartfeed_debug_info` bundle — a plain dict; there is no model class behind it. The core writes these (all positions **0-based**):
 
 - `source` — the producing `subfeed_id`.
 - `smartfeed_position` — final 0-based page position (set by `FeedManager`). Wrappers also stamp a pre-rerank position under their `node_id`.
 - `rerank_position` — 0-based post-rerank index under the wrapper's `node_id`, only when rerank is configured.
 
-Other documented fields (`strategy`, `rrf_score`, `feature_score`, `feature_position`, `total_reranked`, `raw_params`) are **conventions only**; the core never writes them. Your rerank callable may attach them (the bundle allows extra keys). `FeedItem` and `SmartFeedDebugInfo` are typing aids and are never instantiated at runtime — the pipeline operates on plain dicts.
+Any other fields (`strategy`, `rrf_score`, `feature_score`, `feature_position`, ...) are **conventions only**; the core never writes them — your fetch/rerank callables may attach whatever extra keys they like. The pipeline operates on plain dicts throughout.
 
 ## Integration checklist and footguns
 

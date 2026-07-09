@@ -19,16 +19,18 @@ def ctx(redis):
 
 @pytest.mark.asyncio
 async def test_cached_wrapper_hides_child_cursors(ctx):
-    config = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {
-            "type": "wrapper", "node_id": "cached",
-            "cache": {"session_size": 50, "session_ttl": 300},
-            "data": {"type": "subfeed", "subfeed_id": "items", "method_name": "items"},
-        },
-    })
+    config = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {
+                "type": "wrapper",
+                "node_id": "cached",
+                "cache": {"session_size": 50, "session_ttl": 300},
+                "data": {"type": "subfeed", "subfeed_id": "items", "method_name": "items"},
+            },
+        }
+    )
 
-    executor = None
     result = await run_executor.run(config.feed, ctx, limit=10, cursor={})
 
     # Only wrapper cursor, NOT subfeed cursor
@@ -39,15 +41,17 @@ async def test_cached_wrapper_hides_child_cursors(ctx):
 
 @pytest.mark.asyncio
 async def test_uncached_wrapper_exposes_child_cursors(ctx):
-    config = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {
-            "type": "wrapper", "node_id": "passthrough",
-            "data": {"type": "subfeed", "subfeed_id": "items", "method_name": "items"},
-        },
-    })
+    config = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {
+                "type": "wrapper",
+                "node_id": "passthrough",
+                "data": {"type": "subfeed", "subfeed_id": "items", "method_name": "items"},
+            },
+        }
+    )
 
-    executor = None
     result = await run_executor.run(config.feed, ctx, limit=10, cursor={})
 
     # Child cursor is visible (no cache to hide it)

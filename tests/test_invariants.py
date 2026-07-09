@@ -21,13 +21,12 @@ def _redis():
 
 
 def _build(cfg):
-    """cfg keys: cache(bool), dedup(bool), overfetch(int), rerank(bool)."""
+    """cfg keys: cache(bool), dedup(bool), rerank(bool)."""
     child = S.subfeed("src", "src")
     node = S.wrapper(
         child,
         session_size=50 if cfg["cache"] else None,
         dedup_key="id" if cfg["dedup"] else None,
-        overfetch_factor=cfg.get("overfetch", 4),
         rerank_method="identity" if cfg.get("rerank") else None,
     )
     return node
@@ -45,17 +44,13 @@ def _p(id_, marks=(), **cfg):
     return pytest.param(cfg, id=id_, marks=marks)
 
 
-# Coverage must hold for every overfetch value and both paths: no item is ever lost.
+# Coverage must hold on both paths: no item is ever lost.
 COVERAGE_CONFIGS = [
-    _p("cache-nodedup",              cache=True,  dedup=False, overfetch=4),
-    _p("passthrough-nodedup",        cache=False, dedup=False, overfetch=4),
-    _p("cache-dedup-of1",            cache=True,  dedup=True,  overfetch=1),
-    _p("passthrough-dedup-of1",      cache=False, dedup=True,  overfetch=1),
-    _p("cache-dedup-of2",            cache=True,  dedup=True,  overfetch=2),
-    _p("cache-dedup-of4",            cache=True,  dedup=True,  overfetch=4),
-    _p("passthrough-dedup-of2",      cache=False, dedup=True,  overfetch=2),
-    _p("passthrough-dedup-of4",      cache=False, dedup=True,  overfetch=4),
-    _p("cache-dedup-of4-rerank",     cache=True,  dedup=True,  overfetch=4, rerank=True),
+    _p("cache-nodedup", cache=True, dedup=False),
+    _p("passthrough-nodedup", cache=False, dedup=False),
+    _p("cache-dedup", cache=True, dedup=True),
+    _p("passthrough-dedup", cache=False, dedup=True),
+    _p("cache-dedup-rerank", cache=True, dedup=True, rerank=True),
 ]
 
 
@@ -72,15 +67,11 @@ async def test_coverage_no_item_lost(cfg):
 # Same matrix WITHOUT the LOSS marks: item loss shows up as coverage gaps, NOT as
 # duplicates or non-termination, so these properties hold for every config.
 NODUP_CONFIGS = [
-    _p("cache-nodedup",          cache=True,  dedup=False, overfetch=4),
-    _p("passthrough-nodedup",    cache=False, dedup=False, overfetch=4),
-    _p("cache-dedup-of1",        cache=True,  dedup=True,  overfetch=1),
-    _p("passthrough-dedup-of1",  cache=False, dedup=True,  overfetch=1),
-    _p("cache-dedup-of2",        cache=True,  dedup=True,  overfetch=2),
-    _p("cache-dedup-of4",        cache=True,  dedup=True,  overfetch=4),
-    _p("passthrough-dedup-of2",  cache=False, dedup=True,  overfetch=2),
-    _p("passthrough-dedup-of4",  cache=False, dedup=True,  overfetch=4),
-    _p("cache-dedup-of4-rerank", cache=True,  dedup=True,  overfetch=4, rerank=True),
+    _p("cache-nodedup", cache=True, dedup=False),
+    _p("passthrough-nodedup", cache=False, dedup=False),
+    _p("cache-dedup", cache=True, dedup=True),
+    _p("passthrough-dedup", cache=False, dedup=True),
+    _p("cache-dedup-rerank", cache=True, dedup=True, rerank=True),
 ]
 
 
@@ -95,13 +86,15 @@ async def test_no_duplicates_across_pages(cfg):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cfg", [
-    _p("cache-nodedup",         cache=True,  dedup=False, overfetch=4),
-    _p("passthrough-nodedup",   cache=False, dedup=False, overfetch=4),
-    _p("cache-dedup-of1",       cache=True,  dedup=True,  overfetch=1),
-    _p("cache-dedup-of4",       cache=True,  dedup=True,  overfetch=4),
-    _p("passthrough-dedup-of4", cache=False, dedup=True,  overfetch=4),
-])
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        _p("cache-nodedup", cache=True, dedup=False),
+        _p("passthrough-nodedup", cache=False, dedup=False),
+        _p("cache-dedup", cache=True, dedup=True),
+        _p("passthrough-dedup", cache=False, dedup=True),
+    ],
+)
 async def test_pages_are_full_until_exhaustion(cfg):
     """Every non-final page has exactly `limit` items (loss does not shorten pages,
     so this passes even where coverage fails -- keeping the two concerns separate)."""

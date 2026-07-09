@@ -135,7 +135,8 @@ class TestDedupAcrossPages:
             """Always returns ids 0..limit-1 regardless of page."""
             data = [{"id": i, "val": "a"} for i in range(limit)]
             return FeedResult(
-                data=data, next_page={"page": next_page.get("page", 1) + 1},
+                data=data,
+                next_page={"page": next_page.get("page", 1) + 1},
                 has_next_page=True,
             )
 
@@ -143,7 +144,8 @@ class TestDedupAcrossPages:
             """Always returns ids 0..limit-1 (same as a) -- full overlap."""
             data = [{"id": i, "val": "b"} for i in range(limit)]
             return FeedResult(
-                data=data, next_page={"page": next_page.get("page", 1) + 1},
+                data=data,
+                next_page={"page": next_page.get("page", 1) + 1},
                 has_next_page=True,
             )
 
@@ -217,9 +219,9 @@ class TestDedupAcrossPages:
             cursor = result.next_page
 
         # With cache, dedup holds across ALL pages served from the same session
-        assert len(all_ids) == len(set(all_ids)), (
-            "Duplicates found across cached pages -- dedup should cover the entire session"
-        )
+        assert len(all_ids) == len(
+            set(all_ids)
+        ), "Duplicates found across cached pages -- dedup should cover the entire session"
 
 
 # ---------------------------------------------------------------------------
@@ -265,15 +267,13 @@ class TestSessionRebuildContinuation:
 
         # No overlap between pages
         all_ids = ids_p1 + ids_p2 + ids_p3
-        assert len(all_ids) == len(set(all_ids)), (
-            "Overlap detected between pages after session rebuild"
-        )
+        assert len(all_ids) == len(set(all_ids)), "Overlap detected between pages after session rebuild"
 
         # No gap: the maximum id from page 2 + 1 should be the minimum id from page 3
         # (since make_sequential produces strictly sequential ids)
-        assert min(ids_p3) == max(ids_p2) + 1, (
-            f"Gap detected: page 2 ended at {max(ids_p2)}, page 3 starts at {min(ids_p3)}"
-        )
+        assert (
+            min(ids_p3) == max(ids_p2) + 1
+        ), f"Gap detected: page 2 ended at {max(ids_p2)}, page 3 starts at {min(ids_p3)}"
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +322,7 @@ class TestHasNextPageAtSessionBoundary:
         # Page 3 -- rebuild triggered
         r3 = await run_executor.run(node, ctx, limit=10, cursor=r2.next_page)
         assert len(r3.data) == 10, "Page 3 should return data after rebuild"
-        assert r3.data[0]["id"] != r1.data[0]["id"], (
-            "Page 3 should contain new items, not a repeat of page 1"
-        )
+        assert r3.data[0]["id"] != r1.data[0]["id"], "Page 3 should contain new items, not a repeat of page 1"
 
     @pytest.mark.asyncio
     async def test_page2_has_next_page_reflects_boundary(self, redis):
@@ -495,9 +493,9 @@ class TestPositionalExhaustedPromo:
 
         # Only 2 promo items total
         promo_positions = [i for i, src in enumerate(sources) if src == "promo"]
-        assert len(promo_positions) == 2, (
-            f"Expected exactly 2 promo items, got {len(promo_positions)} at indices {promo_positions}"
-        )
+        assert (
+            len(promo_positions) == 2
+        ), f"Expected exactly 2 promo items, got {len(promo_positions)} at indices {promo_positions}"
 
         # Positions 5 and 7 fall back to default (promo exhausted)
         # These are at index 4 and 6 in the result (0-indexed) since only 2
@@ -549,6 +547,4 @@ class TestPositionalExhaustedPromo:
         await run_executor.run(node, ctx, limit=20, cursor={})
 
         # The promo subfeed should be called exactly once
-        assert call_count == 1, (
-            f"Promo subfeed was called {call_count} times; expected exactly 1"
-        )
+        assert call_count == 1, f"Promo subfeed was called {call_count} times; expected exactly 1"

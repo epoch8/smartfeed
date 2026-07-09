@@ -33,25 +33,30 @@ def ctx(redis):
 @pytest.mark.asyncio
 async def test_wrapper_dedup_priority_override(ctx):
     """Inner wrapper with dedup_priority=3 overrides child subfeed priorities."""
-    config = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {
-            "type": "wrapper", "node_id": "outer",
-            "dedup": {"dedup_key": "id"},
-            "data": {
-                "type": "merger_append", "node_id": "top",
-                "items": [
-                    {"type": "subfeed", "subfeed_id": "promo", "method_name": "promo", "dedup_priority": 10},
-                    {
-                        "type": "wrapper", "node_id": "inner", "dedup_priority": 3,
-                        "data": {"type": "subfeed", "subfeed_id": "regular", "method_name": "regular"},
-                    },
-                ],
+    config = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {
+                "type": "wrapper",
+                "node_id": "outer",
+                "dedup": {"dedup_key": "id"},
+                "data": {
+                    "type": "merger_append",
+                    "node_id": "top",
+                    "items": [
+                        {"type": "subfeed", "subfeed_id": "promo", "method_name": "promo", "dedup_priority": 10},
+                        {
+                            "type": "wrapper",
+                            "node_id": "inner",
+                            "dedup_priority": 3,
+                            "data": {"type": "subfeed", "subfeed_id": "regular", "method_name": "regular"},
+                        },
+                    ],
+                },
             },
-        },
-    })
+        }
+    )
 
-    executor = None
     result = await run_executor.run(config.feed, ctx, limit=10, cursor={})
 
     # promo(10) > inner wrapper override(3) -> all promo

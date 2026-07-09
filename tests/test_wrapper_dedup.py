@@ -36,7 +36,7 @@ def ctx(redis):
 async def test_dedup_removes_duplicates(ctx):
     node = Wrapper(
         node_id="deduped",
-        dedup=WrapperDedup(dedup_key="id", overfetch_factor=2),
+        dedup=WrapperDedup(dedup_key="id"),
         data=MergerAppend(
             node_id="mix",
             items=[

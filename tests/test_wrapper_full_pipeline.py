@@ -36,22 +36,44 @@ def ctx(redis):
 
 @pytest.mark.asyncio
 async def test_full_pipeline(ctx):
-    config = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {
-            "type": "wrapper", "node_id": "full",
-            "cache": {"session_size": 30, "session_ttl": 300},
-            "rerank": {"method_name": "reverse"},
-            "dedup": {"dedup_key": "id", "overfetch_factor": 2},
-            "data": {
-                "type": "merger_percentage", "node_id": "mix",
-                "items": [
-                    {"percentage": 50, "data": {"type": "subfeed", "subfeed_id": "a", "method_name": "source_a", "dedup_priority": 5}},
-                    {"percentage": 50, "data": {"type": "subfeed", "subfeed_id": "b", "method_name": "source_b", "dedup_priority": 1}},
-                ],
+    config = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {
+                "type": "wrapper",
+                "node_id": "full",
+                "cache": {"session_size": 30, "session_ttl": 300},
+                "rerank": {"method_name": "reverse"},
+                "dedup": {
+                    "dedup_key": "id",
+                },
+                "data": {
+                    "type": "merger_percentage",
+                    "node_id": "mix",
+                    "items": [
+                        {
+                            "percentage": 50,
+                            "data": {
+                                "type": "subfeed",
+                                "subfeed_id": "a",
+                                "method_name": "source_a",
+                                "dedup_priority": 5,
+                            },
+                        },
+                        {
+                            "percentage": 50,
+                            "data": {
+                                "type": "subfeed",
+                                "subfeed_id": "b",
+                                "method_name": "source_b",
+                                "dedup_priority": 1,
+                            },
+                        },
+                    ],
+                },
             },
-        },
-    })
+        }
+    )
 
     r1 = await run_executor.run(config.feed, ctx, limit=10, cursor={})
 

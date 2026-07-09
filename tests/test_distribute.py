@@ -9,10 +9,7 @@ from smartfeed.execution import executor as run_executor
 
 async def make_operators(user_id, limit, next_page, **kw):
     """Source producing items with operator_id cycling through op_0, op_1, op_2."""
-    data = [
-        {"id": i, "operator_id": f"op_{i % 3}", "val": f"tour_{i}"}
-        for i in range(limit)
-    ]
+    data = [{"id": i, "operator_id": f"op_{i % 3}", "val": f"item_{i}"} for i in range(limit)]
     return FeedResult(data=data, next_page={"page": 2}, has_next_page=True)
 
 
@@ -22,16 +19,13 @@ async def make_scored(user_id, limit, next_page, **kw):
     Items are in ascending score order so that descending sort visibly reorders them.
     op_0 gets scores 1, 3, 5, ... and op_1 gets scores 2, 4, 6, ...
     """
-    data = [
-        {"id": i, "operator_id": f"op_{i % 2}", "score": i + 1, "val": f"tour_{i}"}
-        for i in range(limit)
-    ]
+    data = [{"id": i, "operator_id": f"op_{i % 2}", "score": i + 1, "val": f"item_{i}"} for i in range(limit)]
     return FeedResult(data=data, next_page={"page": 2}, has_next_page=True)
 
 
 async def make_no_key(user_id, limit, next_page, **kw):
     """Source producing items WITHOUT operator_id (to test missing key behaviour)."""
-    data = [{"id": i, "val": f"tour_{i}"} for i in range(limit)]
+    data = [{"id": i, "val": f"item_{i}"} for i in range(limit)]
     return FeedResult(data=data, next_page={"page": 2}, has_next_page=True)
 
 
@@ -50,6 +44,7 @@ def ctx():
 # ---------------------------------------------------------------------------
 # Basic round-robin
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_basic_round_robin_no_consecutive_same_operator(ctx):
@@ -99,6 +94,7 @@ async def test_round_robin_result_length_matches_limit(ctx):
 # sorting_key sorts before distributing
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_sorting_key_desc_highest_score_first(ctx):
     """With sorting_key='score' and sorting_desc=True, higher scores appear earlier."""
@@ -115,15 +111,14 @@ async def test_sorting_key_desc_highest_score_first(ctx):
     # The highest score items per operator group should appear first.
     # Verify that score of first item per operator_id group is higher than second.
     from collections import defaultdict
+
     by_op = defaultdict(list)
     for item in result.data:
         by_op[item["operator_id"]].append(item["score"])
 
     for op, scores in by_op.items():
         if len(scores) >= 2:
-            assert scores[0] >= scores[1], (
-                f"Operator {op}: expected descending scores, got {scores}"
-            )
+            assert scores[0] >= scores[1], f"Operator {op}: expected descending scores, got {scores}"
 
 
 @pytest.mark.asyncio
@@ -176,6 +171,7 @@ async def test_no_sorting_key_preserves_source_order(ctx):
 # Missing distribution_key raises KeyError
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_missing_distribution_key_raises(ctx):
     """Items without the distribution_key should raise KeyError."""
@@ -191,6 +187,7 @@ async def test_missing_distribution_key_raises(ctx):
 # ---------------------------------------------------------------------------
 # Multiple subfeeds
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_multiple_subfeeds_merged_before_distribute(ctx):

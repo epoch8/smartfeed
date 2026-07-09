@@ -1,4 +1,4 @@
-"""BUG #2 -- shared cache (cache_key) cannot paginate past session_size.
+"""Regression: shared cache (cache_key) cannot paginate past session_size.
 
 When a cache_key wrapper exhausts its per-wrapper cache, the warm path calls
 _cold_build with the continuation child_cursor, but _build_shared_base
@@ -22,8 +22,7 @@ def _redis():
 
 
 def _shared_wrapper():
-    return S.wrapper(S.subfeed("src", "src"), node_id="w",
-                     session_size=20, cache_key="shared")
+    return S.wrapper(S.subfeed("src", "src"), node_id="w", session_size=20, cache_key="shared")
 
 
 @pytest.mark.asyncio

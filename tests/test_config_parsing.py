@@ -1,6 +1,5 @@
-import pytest
 from smartfeed.models.base import BaseNode
-from smartfeed.models import FeedConfig
+from smartfeed.models import FeedConfig, SubFeed, Wrapper
 
 
 class DummyNode(BaseNode):
@@ -23,38 +22,52 @@ def test_config_hash_changes_with_params():
 
 
 def test_parse_simple_subfeed():
-    cfg = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {"type": "subfeed", "subfeed_id": "x", "method_name": "items"},
-    })
+    cfg = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {"type": "subfeed", "subfeed_id": "x", "method_name": "items"},
+        }
+    )
+    assert isinstance(cfg.feed, SubFeed)
     assert cfg.feed.subfeed_id == "x"
 
 
 def test_parse_wrapper_with_cache():
-    cfg = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {
-            "type": "wrapper", "node_id": "w",
-            "cache": {"session_size": 100, "session_ttl": 300},
-            "data": {"type": "subfeed", "subfeed_id": "x", "method_name": "items"},
-        },
-    })
+    cfg = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {
+                "type": "wrapper",
+                "node_id": "w",
+                "cache": {"session_size": 100, "session_ttl": 300},
+                "data": {"type": "subfeed", "subfeed_id": "x", "method_name": "items"},
+            },
+        }
+    )
+    assert isinstance(cfg.feed, Wrapper)
+    assert cfg.feed.cache is not None
     assert cfg.feed.cache.session_size == 100
 
 
 def test_parse_nested_config():
-    cfg = FeedConfig.model_validate({
-        "version": "2",
-        "feed": {
-            "type": "wrapper", "node_id": "outer",
-            "dedup": {"dedup_key": "id"},
-            "data": {
-                "type": "merger_percentage", "node_id": "mix",
-                "items": [
-                    {"percentage": 50, "data": {"type": "subfeed", "subfeed_id": "a", "method_name": "items"}},
-                    {"percentage": 50, "data": {"type": "subfeed", "subfeed_id": "b", "method_name": "items"}},
-                ],
+    cfg = FeedConfig.model_validate(
+        {
+            "version": "2",
+            "feed": {
+                "type": "wrapper",
+                "node_id": "outer",
+                "dedup": {"dedup_key": "id"},
+                "data": {
+                    "type": "merger_percentage",
+                    "node_id": "mix",
+                    "items": [
+                        {"percentage": 50, "data": {"type": "subfeed", "subfeed_id": "a", "method_name": "items"}},
+                        {"percentage": 50, "data": {"type": "subfeed", "subfeed_id": "b", "method_name": "items"}},
+                    ],
+                },
             },
-        },
-    })
+        }
+    )
+    assert isinstance(cfg.feed, Wrapper)
+    assert cfg.feed.dedup is not None
     assert cfg.feed.dedup.dedup_key == "id"

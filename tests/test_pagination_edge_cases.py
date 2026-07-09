@@ -24,6 +24,7 @@ def _redis():
 # has_next_page exactness: no phantom trailing empty page, no lost final item
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("n,limit", [(25, 10), (30, 10), (20, 10), (40, 10), (5, 10), (1, 10)])
 async def test_has_next_exact_passthrough(n, limit):
@@ -51,10 +52,11 @@ async def test_has_next_exact_cached(n, limit):
 # Empty source
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_empty_source_returns_empty_no_next():
     src = S.ScriptedSource([])
-    node = S.wrapper(S.subfeed("src", "src"), session_size=20, dedup_key="id", overfetch_factor=4)
+    node = S.wrapper(S.subfeed("src", "src"), session_size=20, dedup_key="id")
     ctx = S.make_ctx({"src": src}, redis=_redis())
     r = await run_executor.run(node, ctx, limit=10, cursor={})
     assert r.data == []
@@ -64,6 +66,7 @@ async def test_empty_source_returns_empty_no_next():
 # ---------------------------------------------------------------------------
 # limit larger than the whole pool
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_limit_larger_than_pool():
@@ -78,13 +81,13 @@ async def test_limit_larger_than_pool():
 # shuffle=True must not defeat cross-page dedup (seen-set)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_shuffle_does_not_defeat_cross_page_dedup():
     pool = S.unique_pool(30)
     pool.insert(25, {"id": 3, "val": "again"})  # id 3 re-emitted on a later page
     src = S.ScriptedSource(pool)
-    node = S.wrapper(SubFeed(subfeed_id="src", method_name="src", shuffle=True),
-                     dedup_key="id", overfetch_factor=1)
+    node = S.wrapper(SubFeed(subfeed_id="src", method_name="src", shuffle=True), dedup_key="id")
     ctx = S.make_ctx({"src": src}, redis=_redis())
     pages = await S.drain(node, ctx, limit=5, max_pages=50)
     ids = S.flat_ids(pages)

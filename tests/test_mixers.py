@@ -2,6 +2,7 @@ import pytest
 from smartfeed.models.subfeed import SubFeed
 from smartfeed.execution.context import ExecutionContext
 from smartfeed.execution import executor as run_executor
+from smartfeed.models.mixers import MergerPercentage, MergerPercentageItem, MergerAppend, MergerPositional
 from tests.conftest import METHODS
 
 
@@ -16,9 +17,6 @@ async def test_executor_runs_subfeed(ctx):
     result = await run_executor.run(node, ctx, limit=5, cursor={})
     assert len(result.data) == 5
     assert result.data[0]["_smartfeed_debug_info"]["source"] == "items"
-
-
-from smartfeed.models.mixers import MergerPercentage, MergerPercentageItem, MergerAppend, MergerPositional
 
 
 @pytest.mark.asyncio
@@ -66,6 +64,6 @@ async def test_positional_inserts_at_positions(ctx):
     )
     result = await run_executor.run(node, ctx, limit=5, cursor={})
     sources = [item["_smartfeed_debug_info"]["source"] for item in result.data]
-    assert sources[0] == "promo"   # position 1
+    assert sources[0] == "promo"  # position 1
     assert sources[1] == "regular"
-    assert sources[2] == "promo"   # position 3
+    assert sources[2] == "promo"  # position 3

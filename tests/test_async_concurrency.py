@@ -4,13 +4,12 @@ and that the event loop stays responsive under load."""
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Optional
 
 import pytest
 
 from smartfeed.models.base import FeedResult
 from smartfeed.models.subfeed import SubFeed
-from smartfeed.models.wrapper import Wrapper, WrapperCache, WrapperDedup
 from smartfeed.models.mixers import MergerAppend, MergerPercentage, MergerPercentageItem, MergerPositional
 from smartfeed.execution.context import ExecutionContext
 from smartfeed.execution import executor as run_executor
@@ -20,9 +19,11 @@ from smartfeed.execution import executor as run_executor
 # Helpers: concurrency tracker + loop block monitor
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ConcurrencyTracker:
     """Tracks how many leaf calls are in-flight at the same time."""
+
     current: int = 0
     peak: int = 0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -72,6 +73,7 @@ class LoopBlockMonitor:
 # Slow subfeed factory
 # ---------------------------------------------------------------------------
 
+
 def make_slow_subfeed_method(
     source: str,
     latency: float,
@@ -107,6 +109,7 @@ def make_slow_subfeed_method(
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestParallelSubfeeds:
     """Verify that sibling subfeeds in a mixer run concurrently."""
 
@@ -121,7 +124,6 @@ class TestParallelSubfeeds:
             "slow_b": make_slow_subfeed_method("b", latency, tracker, calls),
         }
         ctx = ExecutionContext(session_id="s1", methods_dict=methods, redis=None)
-        executor = None
 
         node = MergerAppend(
             node_id="par",
@@ -156,7 +158,6 @@ class TestParallelSubfeeds:
             "slow_c": make_slow_subfeed_method("c", latency, tracker, calls),
         }
         ctx = ExecutionContext(session_id="s1", methods_dict=methods, redis=None)
-        executor = None
 
         node = MergerPercentage(
             node_id="pct",
@@ -187,7 +188,6 @@ class TestParallelSubfeeds:
             "slow_regular": make_slow_subfeed_method("regular", latency, tracker, calls),
         }
         ctx = ExecutionContext(session_id="s1", methods_dict=methods, redis=None)
-        executor = None
 
         node = MergerPositional(
             node_id="pos",
@@ -222,7 +222,6 @@ class TestEventLoopResponsiveness:
             subfeeds.append(SubFeed(subfeed_id=name, method_name=name))
 
         ctx = ExecutionContext(session_id="s1", methods_dict=methods, redis=None)
-        executor = None
 
         node = MergerAppend(node_id="big", items=subfeeds)
 
@@ -243,12 +242,8 @@ class TestNestedParallelism:
         calls = {}
         latency = 0.05
 
-        methods = {
-            f"slow_{x}": make_slow_subfeed_method(x, latency, tracker, calls)
-            for x in ("a", "b", "c", "d")
-        }
+        methods = {f"slow_{x}": make_slow_subfeed_method(x, latency, tracker, calls) for x in ("a", "b", "c", "d")}
         ctx = ExecutionContext(session_id="s1", methods_dict=methods, redis=None)
-        executor = None
 
         node = MergerAppend(
             node_id="outer",

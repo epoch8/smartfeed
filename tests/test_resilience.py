@@ -15,6 +15,7 @@ from smartfeed.execution import executor as run_executor
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def make_source(prefix, user_id, limit, next_page, **kwargs):
     page = next_page.get("page", 1)
     start = (page - 1) * limit
@@ -63,8 +64,8 @@ def ctx(redis):
 # 1. Source failure: fill page from remaining source
 # ---------------------------------------------------------------------------
 
-class TestSourceFailureFallback:
 
+class TestSourceFailureFallback:
     @pytest.mark.asyncio
     async def test_one_source_fails_page_filled_from_other(self, ctx):
         """If one source in percentage mix fails, the other fills the page."""
@@ -119,8 +120,8 @@ class TestSourceFailureFallback:
 # 2. Positional: strict position enforcement
 # ---------------------------------------------------------------------------
 
-class TestPositionalStrictPositions:
 
+class TestPositionalStrictPositions:
     @pytest.mark.asyncio
     async def test_promo_at_exact_positions(self, ctx):
         """Promo items must be at positions 1, 3, 5, 7 (1-indexed)."""
@@ -136,9 +137,7 @@ class TestPositionalStrictPositions:
         for pos in [1, 3, 5, 7]:
             item = result.data[pos - 1]  # 1-indexed -> 0-indexed
             source = item.get("_smartfeed_debug_info", {}).get("source", "")
-            assert source == "promo", (
-                f"Position {pos}: expected promo, got {source} (id={item.get('id')})"
-            )
+            assert source == "promo", f"Position {pos}: expected promo, got {source} (id={item.get('id')})"
 
     @pytest.mark.asyncio
     async def test_non_promo_positions_filled_by_default(self, ctx):
@@ -155,16 +154,14 @@ class TestPositionalStrictPositions:
         for pos in non_promo_positions:
             item = result.data[pos]
             source = item.get("_smartfeed_debug_info", {}).get("source", "")
-            assert source == "regular", (
-                f"Position {pos + 1}: expected regular, got {source}"
-            )
+            assert source == "regular", f"Position {pos + 1}: expected regular, got {source}"
 
     @pytest.mark.asyncio
     async def test_positional_with_dedup_preserves_positions(self, ctx):
         """Even with outer dedup, promo positions must be preserved."""
         node = Wrapper(
             node_id="dedup_outer",
-            dedup=WrapperDedup(dedup_key="id", overfetch_factor=3),
+            dedup=WrapperDedup(dedup_key="id"),
             data=MergerPositional(
                 node_id="pos",
                 positions=[1, 3, 5, 7],
@@ -178,17 +175,15 @@ class TestPositionalStrictPositions:
         for pos in [1, 3, 5, 7]:
             item = result.data[pos - 1]
             source = item.get("_smartfeed_debug_info", {}).get("source", "")
-            assert source == "promo", (
-                f"Position {pos}: expected promo after dedup, got {source}"
-            )
+            assert source == "promo", f"Position {pos}: expected promo after dedup, got {source}"
 
 
 # ---------------------------------------------------------------------------
 # 3. Rerank failure: raise_error=True vs False
 # ---------------------------------------------------------------------------
 
-class TestRerankFailureHandling:
 
+class TestRerankFailureHandling:
     @pytest.mark.asyncio
     async def test_rerank_crash_raise_error_true(self, ctx):
         """With raise_error=True (default), rerank failure crashes the request."""

@@ -167,9 +167,7 @@ class TestMergerAppendOneEmptyChild:
 
         assert len(result.data) > 0, "Expected items from the non-empty child"
         sources = [item["_smartfeed_debug_info"]["source"] for item in result.data]
-        assert all(src == "a" for src in sources), (
-            f"Expected all items from 'a', got sources: {sources}"
-        )
+        assert all(src == "a" for src in sources), f"Expected all items from 'a', got sources: {sources}"
 
     @pytest.mark.asyncio
     async def test_has_next_page_reflects_non_empty_child(self):
@@ -217,9 +215,7 @@ class TestMergerPercentageOneEmptySource:
 
         assert len(result.data) > 0, "Expected items from the non-empty source"
         sources = [item["_smartfeed_debug_info"]["source"] for item in result.data]
-        assert all(src == "items" for src in sources), (
-            f"Expected all items from 'items', got sources: {sources}"
-        )
+        assert all(src == "items" for src in sources), f"Expected all items from 'items', got sources: {sources}"
 
     @pytest.mark.asyncio
     async def test_no_items_from_empty_source(self):
@@ -271,9 +267,9 @@ class TestMergerPercentageOddLimit:
 
         result = await run_executor.run(node, ctx, limit=11, cursor={})
 
-        assert len(result.data) == 11, (
-            f"Expected exactly 11 items for odd limit with 40/60 split, got {len(result.data)}"
-        )
+        assert (
+            len(result.data) == 11
+        ), f"Expected exactly 11 items for odd limit with 40/60 split, got {len(result.data)}"
 
     @pytest.mark.asyncio
     async def test_odd_limit_split_sums_to_limit(self):
@@ -337,13 +333,9 @@ class TestMergerPositionalStepBased:
             position = i + 1  # 1-indexed
             source = item["_smartfeed_debug_info"]["source"]
             if position in pos_set:
-                assert source == "positional", (
-                    f"Position {position} (index {i}) should be 'positional', got '{source}'"
-                )
+                assert source == "positional", f"Position {position} (index {i}) should be 'positional', got '{source}'"
             else:
-                assert source == "default", (
-                    f"Position {position} (index {i}) should be 'default', got '{source}'"
-                )
+                assert source == "default", f"Position {position} (index {i}) should be 'default', got '{source}'"
 
     @pytest.mark.asyncio
     async def test_step_positions_count(self):
@@ -360,8 +352,7 @@ class TestMergerPositionalStepBased:
 
         sources = [item["_smartfeed_debug_info"]["source"] for item in result.data]
         assert sources.count("positional") == len(self._STEP_POSITIONS), (
-            f"Expected {len(self._STEP_POSITIONS)} positional items, "
-            f"got {sources.count('positional')}"
+            f"Expected {len(self._STEP_POSITIONS)} positional items, " f"got {sources.count('positional')}"
         )
         assert sources.count("default") == 20 - len(self._STEP_POSITIONS)
 
@@ -389,9 +380,9 @@ class TestMergerPositionalEmptyDefault:
 
         assert len(result.data) > 0, "Expected positional items in the result"
         sources = [item["_smartfeed_debug_info"]["source"] for item in result.data]
-        assert all(src == "positional" for src in sources), (
-            f"Expected all items from 'positional', got sources: {sources}"
-        )
+        assert all(
+            src == "positional" for src in sources
+        ), f"Expected all items from 'positional', got sources: {sources}"
 
     @pytest.mark.asyncio
     async def test_positional_items_fill_configured_positions(self):
@@ -410,9 +401,6 @@ class TestMergerPositionalEmptyDefault:
         # With no default items, the assemble loop skips non-positional slots
         # and only places items at the configured positional slots.
         # Positional items appear but non-positional slots are vacant.
-        pos_set = set(positions)
         for i, item in enumerate(result.data):
             source = item["_smartfeed_debug_info"]["source"]
-            assert source == "positional", (
-                f"Index {i} should be 'positional' (only source), got '{source}'"
-            )
+            assert source == "positional", f"Index {i} should be 'positional' (only source), got '{source}'"

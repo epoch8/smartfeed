@@ -9,5 +9,5 @@ from redis.asyncio import Redis as AsyncRedis
 @dataclass
 class ExecutionContext:
     session_id: str
-    methods_dict: Dict[str, Callable]
-    redis: Optional[AsyncRedis] = None
+    methods_dict: Dict[str, Callable[..., Any]]
+    redis: Optional[AsyncRedis[Any]] = None

@@ -54,6 +54,9 @@ async def test_rerank_without_cache(ctx):
     )
     result = await run_executor.run(node, ctx, limit=5, cursor={})
     assert len(result.data) == 5
+    # The rerank must actually run: "reverse" flips the order, so a silently
+    # skipped rerank (ascending ids) fails here.
+    assert result.data[0]["id"] > result.data[-1]["id"]
 
 
 @pytest.mark.asyncio

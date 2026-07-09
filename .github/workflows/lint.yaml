@@ -5,7 +5,10 @@ on:
     paths:
       - ".github/workflows/lint.yaml"
       - "smartfeed/**"
+      - "tests/**"
       - "pyproject.toml"
+      - "poetry.lock"
+  pull_request:
 
 jobs:
   lint:
@@ -13,8 +16,6 @@ jobs:
     strategy:
       matrix:
         python-version:
-          # - "3.8"
-          # - "3.9"
           - "3.10"
 
     steps:
@@ -37,10 +38,16 @@ jobs:
         run: |
           poetry install --all-extras
 
-      - name: Lint with mypy
+      - name: Lint with ruff
         run: |
-          poetry run mypy smartfeed
+          pip install ruff==0.15.20
+          ruff check smartfeed tests
+
+      - name: Type-check with pyright
+        run: |
+          pip install pyright==1.1.409
+          pyright --pythonpath "$(which python)" smartfeed tests
 
       - name: Lint with black
         run: |
-          poetry run black --check smartfeed
+          poetry run black --check smartfeed tests

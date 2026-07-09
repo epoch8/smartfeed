@@ -1,4 +1,4 @@
-"""BUG #1 -- dedup silently drops the overfetched remainder.
+"""Regression: dedup silently drops the overfetched remainder.
 
 Both dedup paths fetch ``target * overfetch_factor`` items, keep ``target``, and
 return the child cursor advanced past *all* fetched items. The surviving-but-
@@ -25,8 +25,7 @@ def _redis():
 @pytest.mark.asyncio
 async def test_cached_dedup_covers_all_unique_items():
     src = S.ScriptedSource(S.unique_pool(200))
-    node = S.wrapper(S.subfeed("src", "src"), session_size=20,
-                     dedup_key="id", overfetch_factor=4)
+    node = S.wrapper(S.subfeed("src", "src"), session_size=20, dedup_key="id")
     ctx = S.make_ctx({"src": src}, redis=_redis())
     pages = await S.drain(node, ctx, limit=10, max_pages=200)
     S.assert_full_coverage(pages, set(range(200)))
@@ -35,7 +34,7 @@ async def test_cached_dedup_covers_all_unique_items():
 @pytest.mark.asyncio
 async def test_passthrough_dedup_covers_all_unique_items():
     src = S.ScriptedSource(S.unique_pool(200))
-    node = S.wrapper(S.subfeed("src", "src"), dedup_key="id", overfetch_factor=4)
+    node = S.wrapper(S.subfeed("src", "src"), dedup_key="id")
     ctx = S.make_ctx({"src": src}, redis=_redis())
     pages = await S.drain(node, ctx, limit=10, max_pages=200)
     S.assert_full_coverage(pages, set(range(200)))
@@ -47,8 +46,7 @@ async def test_cached_dedup_covers_all_with_real_duplicates():
     dupes but still surface every *unique* id. Coverage = the unique universe."""
     pool = S.dup_pool(150, every=4)  # unique universe is range(150), plus cross-page dupes
     src = S.ScriptedSource(pool)
-    node = S.wrapper(S.subfeed("src", "src"), session_size=20,
-                     dedup_key="id", overfetch_factor=4)
+    node = S.wrapper(S.subfeed("src", "src"), session_size=20, dedup_key="id")
     ctx = S.make_ctx({"src": src}, redis=_redis())
     pages = await S.drain(node, ctx, limit=10, max_pages=300)
     S.assert_full_coverage(pages, set(range(150)))
@@ -59,8 +57,7 @@ async def test_overfetch_1_is_lossless_control():
     """Control: with overfetch_factor=1 there is no discard, so no loss. Proves the
     harness is sound and localizes the bug to overfetch>1."""
     src = S.ScriptedSource(S.unique_pool(200))
-    node = S.wrapper(S.subfeed("src", "src"), session_size=20,
-                     dedup_key="id", overfetch_factor=1)
+    node = S.wrapper(S.subfeed("src", "src"), session_size=20, dedup_key="id")
     ctx = S.make_ctx({"src": src}, redis=_redis())
     pages = await S.drain(node, ctx, limit=10, max_pages=300)
     S.assert_full_coverage(pages, set(range(200)))

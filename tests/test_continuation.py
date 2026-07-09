@@ -25,6 +25,7 @@ from smartfeed.execution import executor as run_executor
 # Infinite stateful source: returns items based on page cursor
 # ---------------------------------------------------------------------------
 
+
 async def infinite_source(user_id, limit, next_page, **kw):
     """Returns `limit` items starting from (page-1)*limit.  IDs are globally unique."""
     page = next_page.get("page", 1)
@@ -62,6 +63,7 @@ def _make_wrapper(session_size=20):
 # Helper: collect three pages
 # ---------------------------------------------------------------------------
 
+
 async def _three_pages(ctx, session_size=20, limit=10):
     node = _make_wrapper(session_size=session_size)
     r1 = await run_executor.run(node, ctx, limit=limit, cursor={})
@@ -73,6 +75,7 @@ async def _three_pages(ctx, session_size=20, limit=10):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_pages_1_and_2_served_from_cache(ctx):
@@ -111,9 +114,7 @@ async def test_page3_items_continue_from_page2_no_gap(ctx):
     first_p3 = min(ids_p3)
 
     # No gap: the first item of page 3 immediately follows the last item of page 2
-    assert first_p3 == last_p2 + 1, (
-        f"Expected page 3 to start at {last_p2 + 1}, got {first_p3}"
-    )
+    assert first_p3 == last_p2 + 1, f"Expected page 3 to start at {last_p2 + 1}, got {first_p3}"
 
 
 @pytest.mark.asyncio
@@ -140,11 +141,7 @@ async def test_all_ids_across_three_pages_are_unique(ctx):
     """All item IDs across pages 1, 2 and 3 are distinct."""
     r1, r2, r3 = await _three_pages(ctx)
 
-    all_ids = (
-        [item["id"] for item in r1.data]
-        + [item["id"] for item in r2.data]
-        + [item["id"] for item in r3.data]
-    )
+    all_ids = [item["id"] for item in r1.data] + [item["id"] for item in r2.data] + [item["id"] for item in r3.data]
     assert len(all_ids) == len(set(all_ids)), "Duplicate IDs found across pages"
 
 
@@ -153,11 +150,7 @@ async def test_all_ids_are_globally_sequential(ctx):
     """Items across pages 1-3 form a gapless sequence starting from 0."""
     r1, r2, r3 = await _three_pages(ctx)
 
-    all_ids = sorted(
-        item["id"]
-        for page in (r1.data, r2.data, r3.data)
-        for item in page
-    )
+    all_ids = sorted(item["id"] for page in (r1.data, r2.data, r3.data) for item in page)
     expected = list(range(30))
     assert all_ids == expected, f"Expected {expected}, got {all_ids}"
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from random import shuffle
-from typing import Any, Dict, List, Literal
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional
 
 from .base import BaseNode, FeedResult
+
+if TYPE_CHECKING:
+    from smartfeed.execution.context import ExecutionContext
 
 
 class SubFeed(BaseNode):
@@ -16,20 +19,28 @@ class SubFeed(BaseNode):
 
     async def execute(
         self,
-        methods_dict: dict,
+        methods_dict: Dict[str, Any],
         session_id: str,
         limit: int,
-        cursor: dict,
+        cursor: Dict[str, Any],
+        ctx: Optional[ExecutionContext] = None,
         **params: Any,
     ) -> FeedResult:
         method = methods_dict[self.method_name]
         subfeed_cursor = cursor.get(self.subfeed_id, {})
+        # Like the missing-method KeyError, this raises regardless of raise_error:
+        # a malformed cursor is client tampering, not a source failure to fail soft on.
+        if not isinstance(subfeed_cursor, dict):
+            raise ValueError(
+                f"SubFeed '{self.subfeed_id}': cursor entry must be a dict, got {type(subfeed_cursor).__name__}"
+            )
 
         try:
             result: FeedResult = await method(
                 user_id=session_id,
                 limit=limit,
                 next_page=subfeed_cursor,
+                ctx=ctx,
                 **params,
                 **self.subfeed_params,
             )

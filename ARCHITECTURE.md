@@ -43,7 +43,7 @@ Mixer (coordinator) -- runs children in parallel, assembles results
 
 Module-level functions (no class):
 
-- `run(node, ctx, limit, cursor)` -- dispatches to `node.execute()` or `node.build_mix_plan()`
+- `run(node, ctx, limit, cursor)` -- dispatches on `isinstance(node, MixerNode)`: mixers build a MixPlan, leaf/pipeline nodes execute()
 - `_execute_mix(plan, ctx, cursor)` -- runs MixPlan children in parallel via `asyncio.gather`
 
 ### Wrapper Pipeline
@@ -91,21 +91,24 @@ FeedResult(data: list, next_page: dict, has_next_page: bool)
 
 ### Output
 
-```
-SmartFeedDebugInfo(source, smartfeed_position, rerank_position?, rrf_score?, ...)
-FeedItem(id, _smartfeed_debug_info: SmartFeedDebugInfo)
-```
+Items are plain dicts; each carries a `_smartfeed_debug_info` dict bundle
+(source, smartfeed_position, rerank_position when reranked -- all 0-based).
 
 ## Redis State
 
 ```
-sf:{session_id}:{node_id}:{config_hash}          -- cached session data (JSON list)
-sf:{session_id}:{node_id}:{config_hash}:meta      -- metadata (gen, child_cursor, child_has_next)
-sf:{session_id}:{node_id}:{config_hash}:coldlock  -- cold-build lock (SETNX, ttl 30s)
-sf:{session_id}:{node_id}:{config_hash}:seen      -- session-scoped dedup seen-set (Redis SET)
-sf:{session_id}:{cache_key}:{child_hash}:{segment}       -- shared base segment (per continuation window)
-sf:{session_id}:{cache_key}:{child_hash}:{segment}:lock  -- shared segment cold-build lock (SETNX)
+sf:{session_id}:{cache_key or node_id}:{config_hash}           -- cached session batch (Redis LIST of orjson items)
+sf:{session_id}:{cache_key or node_id}:{config_hash}:meta      -- metadata (gen, child_cursor, child_has_next)
+sf:{session_id}:{cache_key or node_id}:{config_hash}:coldlock  -- cold-build lock (SETNX, ttl 10s)
+sf:{session_id}:{node_id}:{config_hash}:seen                   -- session-scoped dedup seen-set (Redis SET)
+sf:{session_id}:{cache_key}:{child_hash}:{segment}       -- shared base segment (blob, per continuation window)
+sf:{session_id}:{cache_key}:{child_hash}:{segment}:meta  -- shared segment meta (child cursor / has_next)
+sf:{session_id}:{cache_key}:{child_hash}:{segment}:lock  -- shared segment cold-build lock (SETNX, ttl 10s)
 ```
+
+Warm page reads are one MULTI/EXEC pipeline: GET meta + LLEN + LRANGE of the page
+window + EXPIRE on data/meta/seen -- an atomic snapshot that transfers only the
+requested window, never the whole batch.
 
 TTL = inactivity timeout. Refreshed on every access via pipeline EXPIRE.
 Cursor for a cached wrapper is `{node_id: {offset, gen}}` (absolute offset).
@@ -126,7 +129,8 @@ not first-seen; equal priority = first-seen.
 
 ## Config Hash
 
-`BaseNode.config_hash()` = md5(model_dump_json(sort_keys=True))[:8].
+`BaseNode.config_hash()` = md5(json.dumps(model_dump(), sort_keys=True, default=str))[:8],
+memoized per node instance (config is immutable after validation).
 
 Used in Redis keys. Any config change = different hash = fresh cache.
 
@@ -143,7 +147,7 @@ Two wrappers with same `cache_key` share base data. Each applies its own rerank.
 ```
 smartfeed/
   models/
-    base.py         -- BaseNode, FeedResult, SmartFeedDebugInfo, FeedItem, config_hash
+    base.py         -- BaseNode, MixerNode, FeedResult, config_hash
     subfeed.py      -- SubFeed (leaf)
     wrapper.py      -- Wrapper (cache + dedup + rerank pipeline)
     mixers.py       -- Percentage, Positional, Append, Distribute, Gradient
