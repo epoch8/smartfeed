@@ -1,13 +1,11 @@
 lint:
-	mypy smartfeed
-	black --check smartfeed
+	ruff check smartfeed tests
+	pyright smartfeed tests
+	black --check smartfeed tests
 
 format:
-	black --verbose smartfeed tests
+	black smartfeed tests
 	isort smartfeed tests
 
 test:
-	pytest -s -vv -k "not test_merger_view_session"
-
-test_cache:
-	pytest -s -vv -k "test_merger_view_session"
+	pytest
