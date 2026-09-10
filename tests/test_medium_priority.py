@@ -1,4 +1,4 @@
-"""Medium-priority missing tests for SmartFeed v2.
+"""Medium-priority missing tests for SmartFeed.
 
 Covers:
 1. SubFeed with subfeed_params forwarding

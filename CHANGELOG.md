@@ -2,7 +2,7 @@
 
 ## 0.3.0 (2026-09-10)
 
-SmartFeed v2: complete rewrite. Changes below are relative to the last published release, **0.2.0**. (The pre-rewrite internal working tree contained additional intermediate modules — never part of a published release — that are not listed here.)
+Complete rewrite. Changes below are relative to the last published release, **0.2.0**. (The pre-rewrite internal working tree contained additional intermediate modules — never part of a published release — that are not listed here.)
 
 ### New Features
 
@@ -44,9 +44,9 @@ SmartFeed v2: complete rewrite. Changes below are relative to the last published
 - `FeedResultClient`, `FeedResultNextPage`
 - `examples/`
 
-### Stats (v2 vs the pre-rewrite internal working tree)
+### Stats (vs the pre-rewrite internal working tree)
 
-| Metric | pre-rewrite | v2 |
+| Metric | pre-rewrite | 0.3.0 |
 |--------|-------------|----|
 | Python files | 24 | 11 |
 | Lines of code | 2838 | ~1650 |
