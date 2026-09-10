@@ -2,7 +2,9 @@
 
 ## 0.3.0 (2026-09-10)
 
-Complete rewrite. Changes below are relative to the last published release, **0.2.0**. (The pre-rewrite internal working tree contained additional intermediate modules — never part of a published release — that are not listed here.)
+SmartFeed is rebuilt around a single `Wrapper` node that folds caching, cross-page dedup and rerank into one configurable pipeline stage, replacing `MergerViewSession` and the separate dedup and rerank machinery around it.
+
+This is a breaking release. Upgrading from **0.2.0** requires config and call-site changes — models moved to `smartfeed.models`, `get_data` became `get_feed`, cursors are now plain dicts, and pydantic v2 is required. See Breaking Changes below.
 
 ### New Features
 
