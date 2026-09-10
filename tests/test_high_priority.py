@@ -1,4 +1,4 @@
-"""High-priority missing tests for SmartFeed v2.
+"""High-priority missing tests for SmartFeed.
 
 Covers:
 1. Dedup across 3+ pages (with and without cache)
