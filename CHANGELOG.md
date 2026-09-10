@@ -46,14 +46,6 @@ This is a breaking release. Upgrading from **0.2.0** requires config and call-si
 - `FeedResultClient`, `FeedResultNextPage`
 - `examples/`
 
-### Stats (vs the pre-rewrite internal working tree)
-
-| Metric | pre-rewrite | 0.3.0 |
-|--------|-------------|----|
-| Python files | 24 | 11 |
-| Lines of code | 2838 | ~1650 |
-| Test files | 26 | 43 |
-
 ## 0.2.0 (2025-11-25)
 
 * Bump dependency versions
