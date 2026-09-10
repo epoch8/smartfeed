@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.0.0 (2026-07-07)
+## 0.3.0 (2026-09-10)
 
-SmartFeed v2: complete rewrite. Changes below are relative to the last published release, **0.2.0**. (The pre-rewrite internal working tree contained additional intermediate modules — never part of a published release — that are not listed here.) See [MIGRATION.md](MIGRATION.md) for step-by-step upgrade instructions.
+SmartFeed v2: complete rewrite. Changes below are relative to the last published release, **0.2.0**. (The pre-rewrite internal working tree contained additional intermediate modules — never part of a published release — that are not listed here.)
 
 ### New Features
 
